@@ -1,0 +1,3 @@
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/ABasicStartingPoint/build/CMakeFiles/Tutorial.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/ABasicStartingPoint/build/CMakeFiles/edit_cache.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/ABasicStartingPoint/build/CMakeFiles/rebuild_cache.dir
