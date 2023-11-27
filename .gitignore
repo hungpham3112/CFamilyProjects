@@ -1,0 +1,12 @@
+# Ignore all files by default
+*
+
+# Include specific file types
+!/**/*.c
+!/**/*.cpp
+!/**/*.cu
+!/**/*.cl
+!/**/*.h
+!LICENSE
+!README
+!.gitignore
