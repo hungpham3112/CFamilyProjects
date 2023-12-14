@@ -1,3 +1,4 @@
+#define CL_TARGET_OPENCL_VERSION 300
 #include <stdio.h> 
 
 #ifdef MAC
@@ -42,5 +43,6 @@ int main() {
     printf("Platform profile: %s\n", platform_profile);
     printf("Platform extension: %s\n", platform_extensions);
   }
-
+  // Free heap
+  free(platforms);
 }

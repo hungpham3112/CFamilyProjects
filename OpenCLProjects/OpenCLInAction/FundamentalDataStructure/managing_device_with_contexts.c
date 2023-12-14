@@ -1,3 +1,4 @@
+#define CL_TARGET_OPENCL_VERSION 300
 #include <stdio.h>
 
 #ifdef MAC
@@ -46,11 +47,7 @@ int main() {
     printf("Create context successfully\n");
   }
 
-  err = clGetContextInfo(context, CL_CONTEXT_REFERENCE_COUNT, sizeof(context_reference_count), &context_reference_count, NULL);
-  if (err < 0) {
-    perror("Couldn't create context\n");
-    exit(1);
-  }
+  clGetContextInfo(context, CL_CONTEXT_REFERENCE_COUNT, sizeof(context_reference_count), &context_reference_count, NULL);
   printf("Context reference count: %u\n", context_reference_count);
   clRetainContext(context);
   clGetContextInfo(context, CL_CONTEXT_REFERENCE_COUNT, sizeof(context_reference_count), &context_reference_count, NULL);
@@ -59,5 +56,7 @@ int main() {
   clGetContextInfo(context, CL_CONTEXT_REFERENCE_COUNT, sizeof(context_reference_count), &context_reference_count, NULL);
   printf("Context reference count: %u\n", context_reference_count);
 
-
+  // Free heap
+  free(devices);
+  free(platforms);
 }

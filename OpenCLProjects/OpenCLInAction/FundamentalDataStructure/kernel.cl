@@ -1,4 +1,6 @@
-__kernel void hello_kernel(__global char16 *msg)  {
-	*msg = (char16)('H', 'e', 'l', 'l', 'o', ' ',
-		'k', 'e', 'r', 'n', 'e', 'l', '!', '!', '!', '\0');
+__kernel void vec_add(__global float4 *vec1,
+		      __global float4 *vec2,
+		      __global float4 *vec3) {
+	int id = get_global_id(0);
+ 	vec3[id] = vec1[id] + vec2[id];
 }

@@ -1,3 +1,4 @@
+#define CL_TARGET_OPENCL_VERSION 300
 #include <stdio.h> 
 
 #ifdef MAC
@@ -42,21 +43,29 @@ int main() {
   // Identify devices info
   cl_device_type device_type;
   cl_uint device_vendor_id, device_max_compute_units;
-  char device_extensions[1024];
+  char *device_extensions;
+  size_t device_extension_size;
   for (int i = 0; i < num_devices; ++i) {
       clGetDeviceInfo(devices[i], CL_DEVICE_TYPE, sizeof(device_type), &device_type, NULL);
       clGetDeviceInfo(devices[i], CL_DEVICE_VENDOR_ID, sizeof(device_vendor_id), &device_vendor_id, NULL);
       clGetDeviceInfo(devices[i], CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(device_max_compute_units), &device_max_compute_units, NULL);
-      clGetDeviceInfo(devices[i], CL_DEVICE_EXTENSIONS, sizeof(device_extensions), &device_extensions , NULL);
+      clGetDeviceInfo(devices[i], CL_DEVICE_EXTENSIONS, 0, NULL, &device_extension_size);
+      device_extensions = (char *) malloc(device_extension_size);
+      clGetDeviceInfo(devices[i], CL_DEVICE_EXTENSIONS, device_extension_size, device_extensions, NULL);
       // Using & not && in here because device_type is long unsigned int
       // and CL_DEVICE_TYPE_GPU != 0 so if use && in here the condition always
       // true -> wrong. In here we have 2 number so we need bitwise & operator.
-      if (device_type & CL_DEVICE_TYPE_GPU) {
+      if (device_type == CL_DEVICE_TYPE_GPU) {
         printf("Device type: GPU\n");
       }
       printf("Device vendor id: %d\n", device_vendor_id);
       printf("Device max_compute_units: %d\n", device_max_compute_units);
       printf("Device extension(s): %s\n", device_extensions);
+      free(device_extensions);
   }
+
+  // Clean heap
+  free(devices);
+  free(platforms);
 
 }
