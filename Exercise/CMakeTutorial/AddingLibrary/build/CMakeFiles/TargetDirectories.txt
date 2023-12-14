@@ -1,0 +1,7 @@
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/build/CMakeFiles/Tutorial.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/build/CMakeFiles/edit_cache.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/build/CMakeFiles/rebuild_cache.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/build/MathFunctions/CMakeFiles/MathFunctions.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/build/MathFunctions/CMakeFiles/SqrtLibrary.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/build/MathFunctions/CMakeFiles/edit_cache.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/build/MathFunctions/CMakeFiles/rebuild_cache.dir

@@ -1,0 +1,3 @@
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/CMakeFiles/Tutorial.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/CMakeFiles/edit_cache.dir
+/home/sofia/CFamilyProjects/Exercise/CMakeTutorial/AddingLibrary/CMakeFiles/rebuild_cache.dir

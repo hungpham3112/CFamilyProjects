@@ -1,0 +1,6 @@
+[submodule "Exercise/CMakeTutorial/CMake"]
+	path = Exercise/CMakeTutorial/CMake
+	url = https://github.com/Kitware/CMake.git
+[submodule "OpenCLProjects/OpenCL-Docs"]
+	path = OpenCLProjects/OpenCL-Docs
+	url = https://github.com/KhronosGroup/OpenCL-Docs

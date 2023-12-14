@@ -12,12 +12,12 @@ int main(int argc, char *argv[]) {
   }
   for (int i = 0; i < sizeof(float); ++i) {
     b[i] = i * i;
-    printf("%d\n", b[i]);
+    printf("%f\n", b[i]);
   }
   for (int i = 0; i < sizeof(double); ++i) {
 
     c[i] = i * i;
-    printf("%d\n", c[i]);
+    printf("%lf\n", c[i]);
   }
   printf("Size of %lu\n", sizeof(int));
   printf("Size of %lu\n", sizeof(float));
