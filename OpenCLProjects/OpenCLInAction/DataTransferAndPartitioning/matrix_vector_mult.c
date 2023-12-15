@@ -1,182 +1,178 @@
 #define CL_TARGET_OPENCL_VERSION 300
+#define _CRT_SECURE_NO_WARNINGS
+#define PROGRAM_FILE "kernel.cl"
+#define KERNEL_FUNC "matvec_mult"
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
 
+#ifdef MAC
+#include <OpenCL/cl.h>
+#else
 #include <CL/cl.h>
-#include <time.h>
-#define ROWS 4
-#define COLS 4
-#define KERNEL_NAME "A"
-
-int bound_var(
-
-int randInt() {
-    return rand();
-}
-
-void randVector(int n, int vector[]) {
-    for (int i = 0; i < n; ++i) {
-        vector[i] = rand();
-    }
-}
-
-const char* readKernelSourceFromFile(const char* filename) {
-    FILE* file = fopen(filename, "r");
-    if (file == NULL) {
-        return NULL; // File not found or couldn't be opened
-    }
-
-    // Find the size of the file
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
-    rewind(file);
-
-    // Allocate memory for the file content plus a null-terminating character
-    char* source_code = (char*)malloc(file_size + 1);
-    if (source_code == NULL) {
-        fclose(file);
-        return NULL; // Memory allocation failed
-    }
-
-    // Read the file content
-    size_t read_size = fread(source_code, 1, file_size, file);
-    fclose(file);
-
-    if (read_size != file_size) {
-        free(source_code);
-        return NULL; // Reading the file failed
-    }
-
-    // Null-terminate the string
-    source_code[file_size] = '\0';
-
-    return source_code;
-}
-
-void initializeMatrixAndVector(float matrix[ROWS * COLS], float vector[COLS]) {
-    srand(time(NULL));
-
-    for (int i = 0; i < ROWS; ++i) {
-        for (int j = 0; j < COLS; ++j) {
-            matrix[i * COLS + j] = (float)rand() / (float)RAND_MAX;
-        }
-    }
-
-    // Initialize the vector with random values
-    for (int i = 0; i < COLS; ++i) {
-        vector[i] = (float)rand() / (float)RAND_MAX;
-    }
-}
-
-void printMatrixAndVector(float matrix[ROWS * COLS], float vector[COLS]) {
-    // Print the matrix
-    printf("Matrix:\n");
-    for (int i = 0; i < ROWS; ++i) {
-        for (int j = 0; j < COLS; ++j) {
-            printf("%f\t", matrix[i * COLS + j]);
-        }
-        printf("\n");
-    }
-
-    // Print the vector
-    printf("\nVector:\n");
-    for (int i = 0; i < COLS; ++i) {
-        printf("%f\n", vector[i]);
-    }
-}
+#endif
 
 int main() {
+
+  /* Host/device data structures */
   cl_platform_id platform;
-  cl_int err;
-  cl_uint num_platform = 1;
-  err = clGetPlatformIDs(num_platform, &platform, NULL);
-  if (err != CL_SUCCESS) {
-    perror("Couldn't get platform");
-    exit(EXIT_FAILURE);
-  } 
-
-  // In here we imply only 1 device;
   cl_device_id device;
-  cl_uint num_device = 1;
-  err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, num_device, &device, NULL);
-  if (err != CL_SUCCESS) {
-    perror("Couldn't get device");
-    exit(EXIT_FAILURE);
-  } 
-
-  // Create context
   cl_context context;
-  context = clCreateContext(NULL, num_device, &device, NULL, NULL, &err);
-  if (err != CL_SUCCESS) {
-    perror("Couldn't create context");
-    exit(EXIT_FAILURE);
-  } 
+  cl_command_queue queue;
+  cl_int i, err;
 
-  // Gen matrix and vector;
-  float mat[ROWS * COLS], vec[COLS], result[COLS];
-  initializeMatrixAndVector(mat, vec);
-
-
-  // Create program in context
+  /* Program/kernel data structures */
   cl_program program;
-  const char* kernelSource = readKernelSourceFromFile("kernel.cl");
-  if (kernelSource == NULL) {
-      printf("Failed to read the kernel source from the file.\n");
-      exit(EXIT_FAILURE);
-  }
-
-  program = clCreateProgramWithSource(context, 1, &kernelSource, NULL, &err);
-  if (err != CL_SUCCESS) {
-      fprintf(stderr, "Error creating program: %d\n", err);
-      exit(EXIT_FAILURE);
-  }
-
-  //Set flag and build program
-  const char options[] = "-cl-std=CL3.0 -cl-mad-enable -Werror -DCL_TARGET_OPENCL_VERSION=300";
-  err = clBuildProgram(program, 1, &device, options, NULL, NULL);
-  if (err != CL_SUCCESS) {
-    fprintf(stderr, "Couldn't build program. OpenCL error code: %d\n", err);
-    exit(EXIT_FAILURE);
-  }
-
-  // Create kernel
+  FILE *program_handle;
+  char *program_buffer, *program_log;
+  size_t program_size, log_size;
   cl_kernel kernel;
-  // This will create with specific kernel name
-  kernel = clCreateKernel(program, KERNEL_NAME , &err);
-  if (err != CL_SUCCESS) {
-    fprintf(stderr, "Couldn't create kernel. OpenCL error code: %d\n", err);
+
+  /* Data and buffers */
+  float mat[16], vec[4], result[4];
+  float correct[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  cl_mem mat_buff, vec_buff, res_buff;
+
+  /* Initialize data to be processed by the kernel */
+  for (i = 0; i < 16; i++) {
+    mat[i] = i * 2.0f;
+  }
+  for (i = 0; i < 4; i++) {
+    vec[i] = i * 3.0f;
+    correct[0] += mat[i] * vec[i];
+    correct[1] += mat[i + 4] * vec[i];
+    correct[2] += mat[i + 8] * vec[i];
+    correct[3] += mat[i + 12] * vec[i];
+  }
+
+  /* Identify a platform */
+  err = clGetPlatformIDs(1, &platform, NULL);
+  if (err < 0) {
+    perror("Couldn't find any platforms");
     exit(1);
   }
 
-  // Create memory objects for kernels to operate on
-  cl_command_queue queue;
-  queue = clCreateCommandQueueWithProperties(context, device, 0, &err);
+  /* Access a device */
+  err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+  if (err < 0) {
+    perror("Couldn't find any devices");
+    exit(1);
+  }
 
-  cl_mem mat_buff, vec_buff, res_buff;
-  mat_buff = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float)*16, mat, &err);
-  vec_buff = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float)*4, vec, &err);
-  res_buff = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(float)*4, NULL, &err);
+  /* Create the context */
+  context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+  if (err < 0) {
+    perror("Couldn't create a context");
+    exit(1);
+  }
 
-  clSetKernelArg(kernel, 0, sizeof(cl_mem), &mat_buff);
+  /* Read program file and place content into buffer */
+  program_handle = fopen(PROGRAM_FILE, "r");
+  if (program_handle == NULL) {
+    perror("Couldn't find the program file");
+    exit(1);
+  }
+  fseek(program_handle, 0, SEEK_END);
+  program_size = ftell(program_handle);
+  rewind(program_handle);
+  program_buffer = (char *)malloc(program_size + 1);
+  program_buffer[program_size] = '\0';
+  fread(program_buffer, sizeof(char), program_size, program_handle);
+  fclose(program_handle);
+
+  /* Create program from file */
+  program = clCreateProgramWithSource(
+      context, 1, (const char **)&program_buffer, &program_size, &err);
+  if (err < 0) {
+    perror("Couldn't create the program");
+    exit(1);
+  }
+  free(program_buffer);
+
+  /* Build program */
+  err = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+  if (err < 0) {
+
+    /* Find size of log and print to std output */
+    clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL,
+                          &log_size);
+    program_log = (char *)malloc(log_size + 1);
+    program_log[log_size] = '\0';
+    clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size + 1,
+                          program_log, NULL);
+    printf("%s\n", program_log);
+    free(program_log);
+    exit(1);
+  }
+
+  /* Create kernel for the mat_vec_mult function */
+  kernel = clCreateKernel(program, KERNEL_FUNC, &err);
+  if (err < 0) {
+    perror("Couldn't create the kernel");
+    exit(1);
+  }
+
+  /* Create CL buffers to hold input and output data */
+  mat_buff = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                            sizeof(float) * 16, mat, &err);
+  if (err < 0) {
+    perror("Couldn't create a buffer object");
+    exit(1);
+  }
+  vec_buff = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                            sizeof(float) * 4, vec, NULL);
+  res_buff =
+      clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(float) * 4, NULL, NULL);
+
+  /* Create kernel arguments from the CL buffers */
+  err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &mat_buff);
+  if (err < 0) {
+    perror("Couldn't set the kernel argument");
+    exit(1);
+  }
   clSetKernelArg(kernel, 1, sizeof(cl_mem), &vec_buff);
   clSetKernelArg(kernel, 2, sizeof(cl_mem), &res_buff);
 
-  const size_t work_units_per_kernel = 4;
-  clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &work_units_per_kernel, NULL, 0, NULL, NULL);
-  clEnqueueReadBuffer(queue, res_buff, CL_TRUE, 0, sizeof(res_buff), result, 0, NULL, NULL);
-  err = clEnqueueReadBuffer(queue, res_buff, CL_TRUE, 0, sizeof(result), result, 0, NULL, NULL);
-  if (err != CL_SUCCESS) {
-    fprintf(stderr, "Couldn't create kernel. OpenCL error code: %d\n", err);
+  /* Create a CL command queue for the device*/
+  queue = clCreateCommandQueueWithProperties(context, device, 0, &err);
+  if (err < 0) {
+    perror("Couldn't create the command queue");
     exit(1);
   }
-  clFinish(queue);
 
-
-  printf("\nResult: \n");
-  for (int i = 0; i < COLS; ++i) {
-    printf("%f\n", result[i]);
+  /* Enqueue the command queue to the device */
+  size_t gsize = 4; /* 4 work-units per kernel */
+  err = clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &gsize, NULL, 0, NULL,
+                               NULL);
+  if (err < 0) {
+    perror("Couldn't enqueue the kernel execution command");
+    exit(1);
   }
 
+  /* Read the result */
+  err = clEnqueueReadBuffer(queue, res_buff, CL_TRUE, 0, sizeof(float) * 4,
+                            result, 0, NULL, NULL);
+  if (err < 0) {
+    perror("Couldn't enqueue the read buffer command");
+    exit(1);
+  }
+
+  /* Test the result */
+  if ((result[0] == correct[0]) && (result[1] == correct[1]) &&
+      (result[2] == correct[2]) && (result[3] == correct[3])) {
+    printf("Matrix-vector multiplication successful.\n");
+  } else {
+    printf("Matrix-vector multiplication unsuccessful.\n");
+  }
+  printf("Correct:\n%f\n%f\n%f\n%f\n", correct[0], correct[1], correct[2],
+         correct[3]);
+
+  printf("Result: \n");
+  for (int i = 0; i < 4; i++) {
+    printf("%f\n", result[i]);
+  }
+  /* Deallocate resources */
   clReleaseMemObject(mat_buff);
   clReleaseMemObject(vec_buff);
   clReleaseMemObject(res_buff);
@@ -184,10 +180,6 @@ int main() {
   clReleaseCommandQueue(queue);
   clReleaseProgram(program);
   clReleaseContext(context);
-  clReleaseDevice(device);
-  free(platform);
 
-
-
-
+  return 0;
 }
