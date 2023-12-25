@@ -10,7 +10,19 @@
 #else
 #include <CL/cl.h>
 #endif
+void printBuildLog(cl_program program, cl_device_id device) {
+  size_t logSize;
+  clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL,
+                        &logSize);
 
+  char *log = (char *)malloc(logSize);
+  clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logSize, log,
+                        NULL);
+
+  printf("Build Log:\n%s\n", log);
+
+  free(log);
+}
 void generateRandomFloatArray(float array[], unsigned long size) {
   for (unsigned long i = 0; i < size; ++i) {
     array[i] = ((float)rand() / (float)RAND_MAX);
@@ -112,79 +124,87 @@ int main() {
   err = clBuildProgram(program, 1, &devices[0], options, NULL, NULL);
   if (err != CL_SUCCESS) {
     perror("Couldn't build program");
+    printBuildLog(program, devices[0]);
     exit(EXIT_FAILURE);
   }
 
-  cl_kernel kernel;
   // This will create with specific kernel name
+  cl_kernel kernel;
   kernel = clCreateKernel(program, "A", &err);
   if (err != CL_SUCCESS) {
     fprintf(stderr, "Couldn't create kernel. OpenCL error code: %d\n", err);
-    exit(1);
+    // exit(1);
   }
 
   // Create buffer as kernel container
   cl_mem f_buffer, y_buffer, d_buffer;
-  size_t gsize = 12, lsize = 2.0;
-  int f_bound = (int)ceil(2.0000000000000004 * gsize +
-                          4.487448054512303e-16 * lsize - 1.0000000000009095);
-  int y_bound = (int)ceil(20.0000000000000004 * gsize +
-                          4.487448054512303e-16 * lsize - 1.0000000000009095);
-  int d_bound = (int)ceil(2.0000000000000004 * gsize +
-                          4.487448054512303e-16 * lsize - 1.0000000000009095);
-  printf("c_bound is: %d \n", f_bound);
+  size_t gsize = 10, lsize = 5;
+  int f_bound =
+      (int)ceil(31.00000000000001 * gsize - 1.6790433018269837e-14 * lsize -
+                1.4551915228366852e-11);
+  int y_bound =
+      (int)ceil(31.00000000000001 * gsize - 1.6790433018269837e-14 * lsize -
+                1.4551915228366852e-11);
+  int d_bound =
+      (int)ceil(31.00000000000001 * gsize - 1.6790433018269837e-14 * lsize -
+                1.4551915228366852e-11);
+  printf("f_bound is: %d \n", f_bound);
   printf("y_bound is: %d \n", y_bound);
   printf("d_bound is: %d \n", d_bound);
   float *f = (float *)malloc(sizeof(float) * f_bound);
   float *y = (float *)malloc(sizeof(float) * y_bound);
   float *d = (float *)malloc(sizeof(float) * d_bound);
-  unsigned int v = 1;
-  unsigned int o = 2;
-  unsigned int j = 4;
-  unsigned int g = 8;
-  unsigned int m = 4;
-  unsigned int n = 2;
-  unsigned int h = 1;
-  unsigned int l = 3;
-  unsigned int x = 5;
-  unsigned int k = 1;
-  unsigned int s = 3;
-  unsigned int e = 2;
-  unsigned int w = 5;
-  unsigned int z = 7;
   generateRandomFloatArray(f, f_bound);
   generateRandomFloatArray(y, y_bound);
   generateRandomFloatArray(d, d_bound);
-  printf("y_bound[6]: %f\n", y[6]);
-  printf("f before: \n");
-  for (int i = 0; i < f_bound; ++i) {
-    printf("f[%d]: %f\n", i, f[i]);
-  }
+  /* printf("l before: \n"); */
+  /* for (int i = 0; i < f_bound; ++i) { */
+  /*   printf("l[%d]: %f\n", i, f[i]); */
+  /* } */
 
-  printf("y before: \n");
-  for (int i = 0; i < y_bound; ++i) {
-    printf("y[%d]: %f\n", i, y[i]);
-  }
+  /* printf("y before: \n"); */
+  /* for (int i = 0; i < y_bound; ++i) { */
+  /*   printf("y[%d]: %f\n", i, y[i]); */
+  /* } */
 
-  printf("d before: \n");
-  for (int i = 0; i < d_bound; ++i) {
-    printf("d[%d]: %f\n", i, d[i]);
-  }
+  /* printf("d before: \n"); */
+  /* for (int i = 0; i < d_bound; ++i) { */
+  /*   printf("d[%d]: %f\n", i, d[i]); */
+  /* } */
+  unsigned int v = 2;
+  unsigned int o = 9;
+  unsigned int j = 1;
+  unsigned int g = 3;
+  unsigned int m = 4;
+  unsigned int n = 6;
+  unsigned int h = 7;
+  unsigned int l = 9;
+  unsigned int x = 14;
+  unsigned int k = 8;
+  unsigned int s = 41;
+  unsigned int e = 0;
+  unsigned int w = 41;
+  unsigned int z = 94;
 
-  f_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                            sizeof(f), f, &err);
-  y_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                            sizeof(y), y, &err);
+  // because of using dynamic allocation so in here we have to use sizeof(float)
+  // * f_bound to prevent the bug. When you accidentally use sizeof(f), it imply
+  // size of a pointer which is 8 bytes, therefore when printing out array
+  // information inside kernel, you can only print the two first number in array
+  // because of each element is float = 4 bytes.
+  f_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                            sizeof(float) * f_bound, f, &err);
+  y_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                            sizeof(float) * y_bound, y, &err);
   d_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                            sizeof(d), d, &err);
+                            sizeof(float) * d_bound, d, &err);
   if (err != CL_SUCCESS) {
     perror("Couldn't create buffer");
     exit(1);
   }
-  clEnqueueWriteBuffer(queue, f_buffer, CL_TRUE, 0, sizeof(f), f, 0, NULL,
-                       NULL);
-  clEnqueueWriteBuffer(queue, y_buffer, CL_TRUE, 0, sizeof(y), y, 0, NULL,
-                       NULL);
+  clEnqueueWriteBuffer(queue, f_buffer, CL_TRUE, 0, sizeof(float) * f_bound, f,
+                       0, NULL, NULL);
+  clEnqueueWriteBuffer(queue, y_buffer, CL_TRUE, 0, sizeof(float) * y_bound, y,
+                       0, NULL, NULL);
 
   clSetKernelArg(kernel, 0, sizeof(cl_mem), &f_buffer);
   clSetKernelArg(kernel, 1, sizeof(unsigned int), &v);
@@ -206,12 +226,14 @@ int main() {
 
   clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &gsize, &lsize, 0, NULL, NULL);
 
-  clEnqueueReadBuffer(queue, d_buffer, CL_TRUE, 0, sizeof(d), d, 0, NULL, NULL);
+  clEnqueueReadBuffer(queue, d_buffer, CL_TRUE, 0, sizeof(float) * d_bound, d,
+                      0, NULL, NULL);
 
-  printf("d after: \n");
-  for (int i = 0; i < d_bound; i++) {
-    printf("d[%d]: %lf\n", i, d[i]);
-  }
+  /* printf("d after: \n"); */
+  /* for (int i = 0; i < d_bound; i++) { */
+  /*   printf("d[%d]: %lf\n", i, d[i]); */
+  /* } */
+
   clReleaseMemObject(f_buffer);
   clReleaseMemObject(y_buffer);
   clReleaseMemObject(d_buffer);

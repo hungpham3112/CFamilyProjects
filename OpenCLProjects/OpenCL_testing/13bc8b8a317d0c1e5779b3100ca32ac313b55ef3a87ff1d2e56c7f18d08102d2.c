@@ -139,7 +139,7 @@ int main() {
   }
 
   c_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                            sizeof(c), c, &err);
+                            sizeof(double) * c_bound, c, &err);
   if (err != CL_SUCCESS) {
     perror("Couldn't create buffer");
     exit(1);
@@ -150,7 +150,8 @@ int main() {
 
   clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &gsize, &lsize, 0, NULL, NULL);
 
-  clEnqueueReadBuffer(queue, c_buffer, CL_TRUE, 0, sizeof(c), c, 0, NULL, NULL);
+  clEnqueueReadBuffer(queue, c_buffer, CL_TRUE, 0, sizeof(double) * c_bound, c,
+                      0, NULL, NULL);
 
   printf("c after: \n");
   for (int i = 0; i < c_bound + k; i++) {

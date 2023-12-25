@@ -16,4 +16,5 @@ kernel void A(global ushort* e, global ushort* c, unsigned int g, unsigned int d
     c[s + q * i] = r;
   }
   e[d + q * i] = r;
+printf("e[%u]: %lu , r: %d\n", d + q * i, e[d + q * i], r);
 }

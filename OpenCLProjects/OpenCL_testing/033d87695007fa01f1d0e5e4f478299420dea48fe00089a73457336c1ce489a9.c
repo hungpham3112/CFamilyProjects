@@ -125,12 +125,12 @@ int main() {
 
   // Create buffer as kernel container
   cl_mem h_buffer;
-  size_t gsize = 12, lsize = 2.0;
+  size_t gsize = 6, lsize = 2;
   int h_bound = (int)ceil(2.000000000000001 * gsize +
                           2.858776420589223e-16 * lsize - 1.0000000000013642);
   printf("h_bound is: %d \n", h_bound);
 
-  double h[h_bound];
+  double *h = (double *)malloc(sizeof(double) * h_bound);
   int w = 4;
   printf("w is: %d\n", w);
   generateRandomDoubleArray(h, h_bound);
@@ -140,7 +140,7 @@ int main() {
   }
 
   h_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                            sizeof(h), h, &err);
+                            sizeof(double) * h_bound, h, &err);
   if (err != CL_SUCCESS) {
     perror("Couldn't create buffer");
     exit(1);
@@ -149,16 +149,17 @@ int main() {
   clSetKernelArg(kernel, 0, sizeof(cl_mem), &h_buffer);
   clSetKernelArg(kernel, 1, sizeof(int), &w);
 
-  clEnqueueWriteBuffer(queue, h_buffer, CL_TRUE, 0, sizeof(h), h, 0, NULL,
-                       NULL);
+  clEnqueueWriteBuffer(queue, h_buffer, CL_TRUE, 0, sizeof(double) * h_bound, h,
+                       0, NULL, NULL);
   clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &gsize, &lsize, 0, NULL, NULL);
 
-  clEnqueueReadBuffer(queue, h_buffer, CL_TRUE, 0, sizeof(h), h, 0, NULL, NULL);
+  clEnqueueReadBuffer(queue, h_buffer, CL_TRUE, 0, sizeof(double) * h_bound, h,
+                      0, NULL, NULL);
   clFinish(queue);
 
   printf("h after: \n");
   for (int i = 0; i < h_bound + w; i++) {
-    printf("h[%d]: %.10lf\n", i, h[i]);
+    printf("h[%d]: %lf, erf(h[%d]): %lf\n", i, h[i], i, erf(h[i]));
   }
   clReleaseMemObject(h_buffer);
   clReleaseKernel(kernel);

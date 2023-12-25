@@ -1,5 +1,6 @@
 #define CL_TARGET_OPENCL_VERSION 300
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +11,21 @@
 #else
 #include <CL/cl.h>
 #endif
+
+#include <limits.h>
+void printBuildLog(cl_program program, cl_device_id device) {
+  size_t logSize;
+  clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL,
+                        &logSize);
+
+  char *log = (char *)malloc(logSize);
+  clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logSize, log,
+                        NULL);
+
+  printf("Build Log:\n%s\n", log);
+
+  free(log);
+}
 
 void generateRandomFloatArray(float array[], unsigned long size) {
   for (unsigned long i = 0; i < size; ++i) {
@@ -62,7 +78,6 @@ int main() {
     exit(1);
   }
   platforms = (cl_platform_id *)malloc(sizeof(cl_platform_id) * num_platforms);
-  printf("number of platforms: %d\n", num_platforms);
   clGetPlatformIDs(num_platforms, platforms, NULL);
 
   // Get device
@@ -74,16 +89,6 @@ int main() {
     exit(1);
   }
   devices = (cl_device_id *)malloc(sizeof(cl_device_id) * num_devices);
-  printf("num devices: %d\n", num_devices);
-  clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_GPU, num_devices, devices, NULL);
-
-  err = clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_GPU, 0, NULL, &num_devices);
-  if (err < 0) {
-    perror("Couldn't get device id\n");
-    exit(1);
-  }
-  devices = (cl_device_id *)malloc(sizeof(cl_device_id) * num_devices);
-  printf("num devices: %d\n", num_devices);
   clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_GPU, num_devices, devices, NULL);
 
   // Create 1 context to store 1 above device.
@@ -97,7 +102,7 @@ int main() {
   // Create program in context
   cl_program program;
   const char *kernelSource = readKernelSourceFromFile(
-      "035f57cf2b4d3f44af0cfab15a4f64bf363d94fed0d1bab20cb7095b34493674.cl");
+      "ebd1bdd6d2267c4733634cc043c34ae0d99f4f309641bbfa5d302bd5e47adecd.cl");
   if (kernelSource == NULL) {
     printf("Failed to read the kernel source from the file.\n");
     exit(EXIT_FAILURE);
@@ -123,86 +128,73 @@ int main() {
   err = clBuildProgram(program, 1, &devices[0], options, NULL, NULL);
   if (err != CL_SUCCESS) {
     perror("Couldn't build program");
+    printBuildLog(program, devices[0]);
     exit(EXIT_FAILURE);
   }
 
-  cl_kernel kernel;
   // This will create with specific kernel name
+  cl_kernel kernel;
   kernel = clCreateKernel(program, "A", &err);
   if (err != CL_SUCCESS) {
     fprintf(stderr, "Couldn't create kernel. OpenCL error code: %d\n", err);
-    exit(1);
+    // exit(1);
   }
 
   // Create buffer as kernel container
-  cl_mem m_buffer, l_buffer;
-  unsigned long gsize = 2000, lsize = 2.0;
-  unsigned long m_bound =
-      (unsigned long)ceil(16439.232743560806 * gsize -
-                          48449.26202661346 * lsize - 28335196.605217382);
-  unsigned long l_bound =
-      (unsigned long)ceil(0.9423256014692764 * gsize -
-                          0.15445459227213437 * lsize + 158.37652173913284);
-  /* printf("m_bound is: %lu \n", m_bound); */
-  /* printf("l_bound is: %lu \n", l_bound); */
-  float *m = (float *)malloc(sizeof(float) * m_bound);
-  float *l = (float *)malloc(sizeof(float) * l_bound);
-  int s = 4, c = 5, o = 3;
-  /* printf("d is: %d\nc is: %d\no is: %d\n", s, c, o); */
-  generateRandomFloatArray(m, m_bound);
-  generateRandomFloatArray(l, l_bound);
-  /* printf("m before: \n"); */
-  /* for (int i = 0; i < m_bound; ++i) { */
-  /*   printf("m[%d]: %f\n", i, m[i]); */
-  /* } */
+  cl_mem m_buffer = NULL, r_buffer = NULL;
+  size_t gsize = 32, lsize = 16;
+  int m_bound = (int)ceil(2.000000000000001 * gsize -
+                          2.0996609339313283e-15 * lsize - 1.0000000000013642);
+  int r_bound = (int)ceil(2.000000000000001 * gsize -
+                          2.0996609339313283e-15 * lsize - 2.0000000000013642);
 
-  /* printf("l before: \n"); */
-  /* for (int i = 0; i < l_bound; ++i) { */
-  /*   printf("l[%d]: %f\n", i, l[i]); */
-  /* } */
+  printf("r_bound:  %d\n", r_bound);
+  printf("m_bound: %d\n", m_bound);
+  float *r = (float *)malloc(sizeof(float) * r_bound);
+  float *m = (float *)malloc(sizeof(float) * m_bound);
+  generateRandomFloatArray(m, m_bound);
+  generateRandomFloatArray(r, r_bound);
+  printf("r before: \n");
+  for (int i = 0; i < r_bound; ++i) {
+    printf("r[%d]: %f\n", i, r[i]);
+  }
+  printf("m before: \n");
+  for (int i = 0; i < m_bound; ++i) {
+    printf("m[%d]: %f\n", i, m[i]);
+  }
 
   m_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
                             sizeof(float) * m_bound, m, &err);
-  l_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                            sizeof(float) * l_bound, l, &err);
+  r_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                            sizeof(float) * r_bound, r, &err);
   if (err != CL_SUCCESS) {
     perror("Couldn't create buffer");
     exit(1);
   }
 
+  int w = 12;
+  clEnqueueWriteBuffer(queue, r_buffer, CL_TRUE, 0, sizeof(float) * r_bound, r,
+                       0, NULL, NULL);
+
+  clSetKernelArg(kernel, 0, sizeof(cl_mem), &r_buffer);
+  clSetKernelArg(kernel, 1, sizeof(cl_mem), &m_buffer);
+  clSetKernelArg(kernel, 2, sizeof(int), &w);
+  clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &gsize, &lsize, 0, NULL, NULL);
   clEnqueueWriteBuffer(queue, m_buffer, CL_TRUE, 0, sizeof(float) * m_bound, m,
                        0, NULL, NULL);
-  clEnqueueWriteBuffer(queue, l_buffer, CL_TRUE, 0, sizeof(float) * l_bound, l,
-                       0, NULL, NULL);
-  clSetKernelArg(kernel, 0, sizeof(cl_mem), &m_buffer);
-  clSetKernelArg(kernel, 1, sizeof(cl_mem), &l_buffer);
-  clSetKernelArg(kernel, 2, sizeof(int), &s);
-  clSetKernelArg(kernel, 3, sizeof(int), &c);
-  clSetKernelArg(kernel, 4, sizeof(int), &o);
-
-  clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &gsize, &lsize, 0, NULL, NULL);
 
   clEnqueueReadBuffer(queue, m_buffer, CL_TRUE, 0, sizeof(float) * m_bound, m,
                       0, NULL, NULL);
 
-  if (m[61] == l[15] && m[85] == l[1]) {
-    printf("Kernel run successfully\n");
-  } else {
-    printf("NO\n");
+  printf("m after: \n");
+  for (int i = 0; i < m_bound + 20; i++) {
+    printf("m[%d]: %lf\n", i, m[i]);
   }
-  /* printf("m after: \n"); */
-  /* for (int i = 0; i < m_bound * s + (m_bound / c * o); i++) { */
-  /*   printf("m[%d]: %f\n", i, m[i]); */
-  /* } */
-  /* printf("l after: \n"); */
-  /* for (int i = 0; i < l_bound * s + (l_bound / c * o); i++) { */
-  /*   printf("m[%d]: %f\n", i, m[i]); */
-  /* } */
 
   free(m);
-  free(l);
+  free(r);
   clReleaseMemObject(m_buffer);
-  clReleaseMemObject(l_buffer);
+  clReleaseMemObject(r_buffer);
   clReleaseKernel(kernel);
   clReleaseCommandQueue(queue);
   clReleaseProgram(program);

@@ -62,7 +62,6 @@ int main() {
     exit(1);
   }
   platforms = (cl_platform_id *)malloc(sizeof(cl_platform_id) * num_platforms);
-  printf("number of platforms: %d\n", num_platforms);
   clGetPlatformIDs(num_platforms, platforms, NULL);
 
   // Get device
@@ -74,16 +73,6 @@ int main() {
     exit(1);
   }
   devices = (cl_device_id *)malloc(sizeof(cl_device_id) * num_devices);
-  printf("num devices: %d\n", num_devices);
-  clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_GPU, num_devices, devices, NULL);
-
-  err = clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_GPU, 0, NULL, &num_devices);
-  if (err < 0) {
-    perror("Couldn't get device id\n");
-    exit(1);
-  }
-  devices = (cl_device_id *)malloc(sizeof(cl_device_id) * num_devices);
-  printf("num devices: %d\n", num_devices);
   clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_GPU, num_devices, devices, NULL);
 
   // Create 1 context to store 1 above device.
@@ -97,7 +86,7 @@ int main() {
   // Create program in context
   cl_program program;
   const char *kernelSource = readKernelSourceFromFile(
-      "035f57cf2b4d3f44af0cfab15a4f64bf363d94fed0d1bab20cb7095b34493674.cl");
+      "21b6a947c40a3028c703584c65e916e1e56e442e0563a0b96fa04ee0300875b6.cl");
   if (kernelSource == NULL) {
     printf("Failed to read the kernel source from the file.\n");
     exit(EXIT_FAILURE);
@@ -126,83 +115,68 @@ int main() {
     exit(EXIT_FAILURE);
   }
 
-  cl_kernel kernel;
   // This will create with specific kernel name
+  cl_kernel kernel;
   kernel = clCreateKernel(program, "A", &err);
   if (err != CL_SUCCESS) {
     fprintf(stderr, "Couldn't create kernel. OpenCL error code: %d\n", err);
-    exit(1);
+    // exit(1);
   }
 
   // Create buffer as kernel container
-  cl_mem m_buffer, l_buffer;
-  unsigned long gsize = 2000, lsize = 2.0;
-  unsigned long m_bound =
-      (unsigned long)ceil(16439.232743560806 * gsize -
-                          48449.26202661346 * lsize - 28335196.605217382);
-  unsigned long l_bound =
-      (unsigned long)ceil(0.9423256014692764 * gsize -
-                          0.15445459227213437 * lsize + 158.37652173913284);
-  /* printf("m_bound is: %lu \n", m_bound); */
-  /* printf("l_bound is: %lu \n", l_bound); */
-  float *m = (float *)malloc(sizeof(float) * m_bound);
-  float *l = (float *)malloc(sizeof(float) * l_bound);
-  int s = 4, c = 5, o = 3;
-  /* printf("d is: %d\nc is: %d\no is: %d\n", s, c, o); */
-  generateRandomFloatArray(m, m_bound);
-  generateRandomFloatArray(l, l_bound);
-  /* printf("m before: \n"); */
-  /* for (int i = 0; i < m_bound; ++i) { */
-  /*   printf("m[%d]: %f\n", i, m[i]); */
+  cl_mem a_buffer = NULL, v_buffer = NULL;
+  size_t gsize = 12, lsize = 2;
+  int a_bound = (int)ceil(1.9999999999999996 * gsize -
+                          4.108100158321727e-18 * lsize - 0.9999999999990905);
+  int v_bound = (int)ceil(1.9999999999999996 * gsize -
+                          4.108100158321727e-18 * lsize - 0.9999999999990905);
+  printf("a_bound and v_bound are:  %d \n", a_bound);
+  float *a = (float *)malloc(sizeof(float) * a_bound);
+  float *v = (float *)malloc(sizeof(float) * v_bound);
+  generateRandomFloatArray(a, a_bound);
+  /* printf("a before: \n"); */
+  /* for (int i = 0; i < a_bound; ++i) { */
+  /*   printf("a[%d]: %f\n", i, a[i]); */
   /* } */
 
-  /* printf("l before: \n"); */
-  /* for (int i = 0; i < l_bound; ++i) { */
-  /*   printf("l[%d]: %f\n", i, l[i]); */
-  /* } */
+  printf("v before: \n");
+  for (int i = 0; i < v_bound; ++i) {
+    printf("v[%d]: %f\n", i, v[i]);
+  }
+  const int w = 100, e = 21, b = 12;
 
-  m_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                            sizeof(float) * m_bound, m, &err);
-  l_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                            sizeof(float) * l_bound, l, &err);
+  a_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                            sizeof(float) * a_bound, a, &err);
+  v_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                            sizeof(float) * v_bound, v, &err);
   if (err != CL_SUCCESS) {
     perror("Couldn't create buffer");
     exit(1);
   }
 
-  clEnqueueWriteBuffer(queue, m_buffer, CL_TRUE, 0, sizeof(float) * m_bound, m,
+  clEnqueueWriteBuffer(queue, a_buffer, CL_TRUE, 0, sizeof(float) * a_bound, a,
                        0, NULL, NULL);
-  clEnqueueWriteBuffer(queue, l_buffer, CL_TRUE, 0, sizeof(float) * l_bound, l,
+  clEnqueueWriteBuffer(queue, v_buffer, CL_TRUE, 0, sizeof(float) * v_bound, v,
                        0, NULL, NULL);
-  clSetKernelArg(kernel, 0, sizeof(cl_mem), &m_buffer);
-  clSetKernelArg(kernel, 1, sizeof(cl_mem), &l_buffer);
-  clSetKernelArg(kernel, 2, sizeof(int), &s);
-  clSetKernelArg(kernel, 3, sizeof(int), &c);
-  clSetKernelArg(kernel, 4, sizeof(int), &o);
+
+  clSetKernelArg(kernel, 0, sizeof(int), &w);
+  clSetKernelArg(kernel, 1, sizeof(cl_mem), &a_buffer);
+  clSetKernelArg(kernel, 2, sizeof(int), &e);
+  clSetKernelArg(kernel, 3, sizeof(cl_mem), &v_buffer);
+  clSetKernelArg(kernel, 4, sizeof(int), &b);
 
   clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &gsize, &lsize, 0, NULL, NULL);
 
-  clEnqueueReadBuffer(queue, m_buffer, CL_TRUE, 0, sizeof(float) * m_bound, m,
+  clEnqueueReadBuffer(queue, v_buffer, CL_TRUE, 0, sizeof(float) * v_bound, v,
                       0, NULL, NULL);
-
-  if (m[61] == l[15] && m[85] == l[1]) {
-    printf("Kernel run successfully\n");
-  } else {
-    printf("NO\n");
+  clFinish(queue); // Wait for the kernel to finish
+  printf("v after: \n");
+  for (int i = 0; i < v_bound; i++) {
+    printf("v[%d]: %lf\n", i, v[i]);
   }
-  /* printf("m after: \n"); */
-  /* for (int i = 0; i < m_bound * s + (m_bound / c * o); i++) { */
-  /*   printf("m[%d]: %f\n", i, m[i]); */
-  /* } */
-  /* printf("l after: \n"); */
-  /* for (int i = 0; i < l_bound * s + (l_bound / c * o); i++) { */
-  /*   printf("m[%d]: %f\n", i, m[i]); */
-  /* } */
 
-  free(m);
-  free(l);
-  clReleaseMemObject(m_buffer);
-  clReleaseMemObject(l_buffer);
+  clReleaseMemObject(v_buffer);
+  clReleaseMemObject(a_buffer);
   clReleaseKernel(kernel);
   clReleaseCommandQueue(queue);
   clReleaseProgram(program);
