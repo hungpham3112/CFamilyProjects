@@ -10,6 +10,4 @@ kernel void A(int i, int k, global float2* y, int j, int e) {
            if (s + w < k && o < j && o < w) {
                y[w * e] = z;
            }
-    //y = (float *)y;
-    printf("y[7]: %f\n",((float*)(y))[7]);
 }
