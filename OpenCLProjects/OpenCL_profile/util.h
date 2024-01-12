@@ -13,8 +13,8 @@
 
 #define ARR_LEN 100
 
-void performTest(unsigned int *h_approx, unsigned int *h_expect,
-                 int numElements) {
+void performApproxTest(unsigned int *h_approx, unsigned int *h_expect,
+                       int numElements) {
 
   // This is the implemetation for isclose() function in pytorch
   // ∣input−other∣ ≤ atol + rtol × ∣other∣
@@ -26,10 +26,24 @@ void performTest(unsigned int *h_approx, unsigned int *h_expect,
     float abs_err = fabs((double)(h_approx[i] - h_expect[i]));
     if (abs_err > (rtol * fabs(((double)h_expect[i] + atol))) / 2.0) {
       fprintf(stderr, "Result verification failed at element %i!\n", i);
+      printf("h_approx[%u]: %i, h_expect[%u]: %i\n", i, h_approx[i], i,
+             h_expect[i]);
       exit(EXIT_FAILURE);
     }
   }
-  fprintf(stdout, "Result verification succesfully!\n");
+  fprintf(stdout, "Result approx verification succesfully!\n");
+}
+
+void performIdenticalTest(unsigned int *h_approx, unsigned int *h_expect,
+                          int numElements) {
+
+  for (int i = 0; i < numElements; ++i) {
+    if (h_approx[i] != h_expect[i]) {
+      fprintf(stderr, "Result verification failed at element %i!\n", i);
+      exit(EXIT_FAILURE);
+    }
+  }
+  fprintf(stdout, "Result identical verification succesfully!\n");
 }
 
 void generateRandomUnsignedIntArray(unsigned int *array, int length,

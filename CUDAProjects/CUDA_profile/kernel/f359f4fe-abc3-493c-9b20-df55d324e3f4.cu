@@ -1,5 +1,6 @@
-// CUDA kernel optimized 2
 #include "./kernel.h"
+
+// CUDA kernel optimized 2
 
 __global__ void CopyBufferOpt2(const unsigned int* src, unsigned int* dst) {
     int id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -17,7 +18,7 @@ int main(int argc, char *argv[])
     size_t size = ARR_LEN * sizeof(unsigned int);
     unsigned int* h_A = (unsigned int*)malloc(size);
     unsigned int* h_B = (unsigned int*)malloc(size);
-    generateRandomUnsignedIntArray(h_A, ARR_LEN, 0, 100);
+    generateRandomUnsignedIntArray(h_A, ARR_LEN, 0, 1000);
     // ShowArr(h_A, size, "h_A");
     unsigned int *d_A, *d_B;
     cudaMalloc((void **)&d_A, size);
@@ -29,8 +30,9 @@ int main(int argc, char *argv[])
     CopyBufferOpt2<<<blockPerGrid, threadPerBlock>>>(d_A, d_B);
 
     cudaMemcpy(h_B, d_B, size, cudaMemcpyDeviceToHost);
-    performTest(h_A, h_B, ARR_LEN);
-    // ShowArr(h_B, size, "h_B");
+    performApproxTest(h_A, h_B, ARR_LEN);
+    performIdenticalTest(h_A, h_B, ARR_LEN);
+    ShowArr(h_B, size, "h_B");
     cudaFree(d_A);
     cudaFree(d_B);
     free(h_A);

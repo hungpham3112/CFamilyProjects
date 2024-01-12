@@ -1,4 +1,5 @@
 #include "util.h"
+#include <stdlib.h>
 
 int main() {
   srand((unsigned int)time(NULL));
@@ -35,18 +36,18 @@ int main() {
 
   // Create program in context
   cl_program program;
-  const char *kernelSource = readKernelSourceFromFile(
-      "0a1ba12659a64a6479f02924131ffd7aefc810b3188946429cb24cf607e47280.cl");
+  const char *kernelSource =
+      readKernelSourceFromFile("./kernel/"
+                               "6dde730a-514d-4785-925d-64fe58878cab.cl");
   if (kernelSource == NULL) {
-    fprintf(stderr, "Failed to read the kernel source from the file: %d\n",
-            err);
+    printf("Failed to read the kernel source from the file.\n");
     exit(EXIT_FAILURE);
   }
 
   program = clCreateProgramWithSource(context, 1, &kernelSource, NULL, &err);
   if (err != CL_SUCCESS) {
     fprintf(stderr, "Error creating program: %d\n", err);
-    exit(EXIT_FAILURE);
+    /* exit(EXIT_FAILURE); */
   }
 
   // Create queue
@@ -68,64 +69,53 @@ int main() {
 
   cl_kernel kernel;
   // This will create with specific kernel name
-  kernel = clCreateKernel(program, "CopyBufferOrigin", &err);
+  kernel = clCreateKernel(program, "CopyBufferOpt1", &err);
   if (err != CL_SUCCESS) {
     fprintf(stderr, "Couldn't create kernel. OpenCL error code: %d\n", err);
     exit(1);
   }
 
   // Create buffer as kernel container
-  cl_mem h_A_buffer, h_B_buffer;
-  size_t gsize = 100, lsize = 0;
+  cl_mem d_A, d_B;
+  size_t gsize = ARR_LEN;
   size_t size = sizeof(unsigned int) * ARR_LEN;
 
   unsigned int *h_A = (unsigned int *)malloc(size);
+  unsigned int *h_B = (unsigned int *)malloc(size);
   generateRandomUnsignedIntArray(h_A, ARR_LEN, 100, 200);
-  ShowArr(h_A, ARR_LEN, "h_A");
+  /* ShowArr(h_A, ARR_LEN, "h_A"); */
 
-  /* y_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-   */
-  /*                           sizeof(unsigned int) * y_bound, y, &err); */
-  /* c_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE |
-   * CL_MEM_COPY_HOST_PTR, */
-  /*                           sizeof(unsigned int) * c_bound, c, &err); */
+  d_A = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, size,
+                       h_A, &err);
+  d_B = clCreateBuffer(context, CL_MEM_WRITE_ONLY, size, NULL, &err);
 
-  /* if (err != CL_SUCCESS) { */
-  /*   perror("Couldn't create buffer"); */
-  /*   exit(1); */
-  /* } */
+  if (err != CL_SUCCESS) {
+    perror("Couldn't create buffer");
+    exit(1);
+  }
 
-  /* clEnqueueWriteBuffer(queue, y_buffer, CL_TRUE, 0, */
-  /*                      sizeof(unsigned int) * y_bound, y, 0, NULL, NULL); */
-  /* clEnqueueWriteBuffer(queue, c_buffer, CL_TRUE, 0, */
-  /*                      sizeof(unsigned int) * c_bound, c, 0, NULL, NULL); */
+  clEnqueueWriteBuffer(queue, d_A, CL_TRUE, 0, size, h_A, 0, NULL, NULL);
 
-  /* clSetKernelArg(kernel, 0, sizeof(int), &p); */
-  /* clSetKernelArg(kernel, 1, sizeof(int), &w); */
-  /* clSetKernelArg(kernel, 2, sizeof(float), &b); */
-  /* clSetKernelArg(kernel, 3, sizeof(cl_mem), &y_buffer); */
-  /* clSetKernelArg(kernel, 4, sizeof(cl_mem), &c_buffer); */
+  clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_A);
+  clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_B);
 
-  /* clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &gsize, &lsize, 0, NULL,
-   * NULL); */
-  /* clFinish(queue); */
+  clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &gsize, NULL, 0, NULL, NULL);
+  clFinish(queue);
 
-  /* clEnqueueReadBuffer(queue, c_buffer, CL_TRUE, 0, */
-  /*                     sizeof(unsigned int) * c_bound, c, 0, NULL, NULL); */
+  clEnqueueReadBuffer(queue, d_B, CL_TRUE, 0, size, h_B, 0, NULL, NULL);
 
-  /* printf("c after: \n"); */
-  /* for (int i = 0; i < w; i++) { */
-  /*   printf("c[%d]: %u\n", i, c[i]); */
-  /* } */
+  /* ShowArr(h_B, ARR_LEN, "h_B"); */
+  performApproxTest(h_B, h_A, ARR_LEN);
+  performIdenticalTest(h_B, h_A, ARR_LEN);
 
-  /* clReleaseMemObject(y_buffer); */
-  /* clReleaseMemObject(c_buffer); */
-  /* clReleaseKernel(kernel); */
-  /* clReleaseCommandQueue(queue); */
-  /* clReleaseProgram(program); */
-  /* clReleaseContext(context); */
-
-  /* // Free heap */
-  /* clReleaseDevice(devices[0]); */
-  /* free(platforms); */
+  free(h_A);
+  free(h_B);
+  clReleaseMemObject(d_A);
+  clReleaseMemObject(d_B);
+  clReleaseKernel(kernel);
+  clReleaseCommandQueue(queue);
+  clReleaseProgram(program);
+  clReleaseContext(context);
+  clReleaseDevice(devices[0]);
+  free(platforms);
 }
