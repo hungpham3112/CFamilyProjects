@@ -12,6 +12,16 @@ __global__ void CopyBufferOpt2(const unsigned int* src, unsigned int* dst) {
     }
 }
 
+__global__ void showBlockIndices() {
+    // Access block indices
+    int blockIndexX = blockIdx.x;
+    int blockIndexY = blockIdx.y;
+    int blockIndexZ = blockIdx.z;
+
+    // Print block indices
+    printf("BlockIdx: (%d, %d, %d)\n", blockIndexX, blockIndexY, blockIndexZ);
+}
+
 int main(int argc, char *argv[])
 {
         
@@ -25,14 +35,15 @@ int main(int argc, char *argv[])
     cudaMalloc((void** )&d_B, size);
     cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
 
-    int threadPerBlock = 256;
+    int threadPerBlock = 512;
     int blockPerGrid = (ARR_LEN + threadPerBlock - 1) / threadPerBlock;
     CopyBufferOpt2<<<blockPerGrid, threadPerBlock>>>(d_A, d_B);
+    // showBlockIndices<<<blockPerGrid, threadPerBlock>>>();
 
     cudaMemcpy(h_B, d_B, size, cudaMemcpyDeviceToHost);
-    performApproxTest(h_A, h_B, ARR_LEN);
-    performIdenticalTest(h_A, h_B, ARR_LEN);
-    ShowArr(h_B, size, "h_B");
+    // performApproxTest(h_A, h_B, ARR_LEN);
+    // performIdenticalTest(h_A, h_B, ARR_LEN);
+    // ShowArr(h_B, ARR_LEN, "h_B");
     cudaFree(d_A);
     cudaFree(d_B);
     free(h_A);

@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define ARR_LEN 1000
+#define ARR_LEN 10000
 
 void generateRandomUnsignedIntArray(unsigned int *array, int length,
                                     unsigned int lower, unsigned int upper) {
@@ -53,8 +53,6 @@ __host__ void performIdenticalTest(unsigned int *h_approx,
   fprintf(stdout, "Result identical verification succesfully!\n");
 }
 
-__global__ void CopyBufferOrigin(unsigned int *src, unsigned int *dst,
-                                 unsigned int size);
-__global__ void CopyBufferOpt1(const unsigned int *src, unsigned int *dst,
-                               unsigned int size);
+__global__ void CopyBufferOrigin(unsigned int *src, unsigned int *dst);
+__global__ void CopyBufferOpt1(const unsigned int *src, unsigned int *dst);
 __global__ void CopyBufferOpt2(const unsigned int *src, unsigned int *dst);
