@@ -4,3 +4,6 @@
 [submodule "OpenCLProjects/OpenCL-Docs"]
 	path = OpenCLProjects/OpenCL-Docs
 	url = https://github.com/KhronosGroup/OpenCL-Docs
+[submodule "cadnaGPU_V1.3bis_all/cuda-samples"]
+	path = cadnaGPU_V1.3bis_all/cuda-samples
+	url = https://github.com/NVIDIA/cuda-samples.git
