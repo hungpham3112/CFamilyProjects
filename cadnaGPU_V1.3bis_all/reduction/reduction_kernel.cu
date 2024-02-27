@@ -26,538 +26,1012 @@
  */
 
 /*
-    Parallel reduction
-
-    This sample shows how to perform a reduction operation on an array of values
-    to produce a single value.
-
-    Reductions are a very common computation in parallel algorithms.  Any time
-    an array of values needs to be reduced to a single value using a binary
-    associative operator, a reduction can be used.  Example applications include
-    statistics computations such as mean and standard deviation, and image
-    processing applications such as finding the total luminance of an
-    image.
-
-    This code performs sum reductions, but any associative operator such as
-    min() or max() could also be used.
-
-    It assumes the input size is a power of 2.
-
-    COMMAND LINE ARGUMENTS
-
-    "--shmoo":         Test performance for 1 to 32M elements with each of the 7
-   different kernels
-    "--n=<N>":         Specify the number of elements to reduce (default
-   1048576)
-    "--threads=<N>":   Specify the number of threads per block (default 128)
-    "--kernel=<N>":    Specify which kernel to run (0-6, default 6)
-    "--maxblocks=<N>": Specify the maximum number of thread blocks to launch
-   (kernel 6 only, default 64)
-    "--cpufinal":      Read back the per-block results and do final sum of block
-   sums on CPU (default false)
-    "--cputhresh=<N>": The threshold of number of blocks sums below which to
-   perform a CPU final reduction (default 1)
-    "-type=<T>":       The datatype for the reduction, where T is "int",
-   "float", or "double" (default int)
+    Parallel reduction kernels
 */
 
-// CUDA Runtime
-#include <cuda_runtime.h>
+#ifndef _REDUCE_KERNEL_H_
+#define _REDUCE_KERNEL_H_
 
-// Utilities and system includes
-#include <helper_cuda.h>
-#include <helper_functions.h>
-#include <algorithm>
+#include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
+#include <stdio.h>
 
-// includes, project
-#include "reduction.h"
+namespace cg = cooperative_groups;
 
-enum ReduceType { REDUCE_INT, REDUCE_FLOAT, REDUCE_DOUBLE };
-
-////////////////////////////////////////////////////////////////////////////////
-// declaration, forward
+// Utility class used to avoid linker errors with extern
+// unsized shared memory arrays with templated type
 template <class T>
-bool runTest(int argc, char **argv, ReduceType datatype);
-
-#define MAX_BLOCK_DIM_SIZE 65535
-
-#ifdef WIN32
-#define strcasecmp strcmpi
-#endif
-
-extern "C" bool isPow2(unsigned int x) { return ((x & (x - 1)) == 0); }
-
-const char *getReduceTypeString(const ReduceType type) {
-  switch (type) {
-    case REDUCE_INT:
-      return "int";
-    case REDUCE_FLOAT:
-      return "float";
-    case REDUCE_DOUBLE:
-      return "double";
-    default:
-      return "unknown";
+struct SharedMemory {
+  __device__ inline operator T *() {
+    extern __shared__ int __smem[];
+    return (T *)__smem;
   }
+
+  __device__ inline operator const T *() const {
+    extern __shared__ int __smem[];
+    return (T *)__smem;
+  }
+};
+
+// specialize for double to avoid unaligned memory
+// access compile errors
+template <>
+struct SharedMemory<double> {
+  __device__ inline operator double *() {
+    extern __shared__ double __smem_d[];
+    return (double *)__smem_d;
+  }
+
+  __device__ inline operator const double *() const {
+    extern __shared__ double __smem_d[];
+    return (double *)__smem_d;
+  }
+};
+
+template <class T>
+__device__ __forceinline__ T warpReduceSum(unsigned int mask, T mySum) {
+  for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+    mySum += __shfl_down_sync(mask, mySum, offset);
+  }
+  return mySum;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Program main
-////////////////////////////////////////////////////////////////////////////////
-int main(int argc, char **argv) {
-  printf("%s Starting...\n\n", argv[0]);
+#if __CUDA_ARCH__ >= 800
+// Specialize warpReduceFunc for int inputs to use __reduce_add_sync intrinsic
+// when on SM 8.0 or higher
+template <>
+__device__ __forceinline__ int warpReduceSum<int>(unsigned int mask,
+                                                  int mySum) {
+  mySum = __reduce_add_sync(mask, mySum);
+  return mySum;
+}
+#endif
 
-  char *typeInput = 0;
-  getCmdLineArgumentString(argc, (const char **)argv, "type", &typeInput);
+/*
+    Parallel sum reduction using shared memory
+    - takes log(n) steps for n input elements
+    - uses n threads
+    - only works for power-of-2 arrays
+*/
 
-  ReduceType datatype = REDUCE_INT;
+/* This reduction interleaves which threads are active by using the modulo
+   operator.  This operator is very expensive on GPUs, and the interleaved
+   inactivity means that no whole warps are active, which is also very
+   inefficient */
+template <class T>
+__global__ void reduce0(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
 
-  if (0 != typeInput) {
-    if (!strcasecmp(typeInput, "float")) {
-      datatype = REDUCE_FLOAT;
-    } else if (!strcasecmp(typeInput, "double")) {
-      datatype = REDUCE_DOUBLE;
-    } else if (strcasecmp(typeInput, "int")) {
-      printf("Type %s is not recognized. Using default type int.\n\n",
-             typeInput);
+  // load shared mem
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  sdata[tid] = (i < n) ? g_idata[i] : 0;
+
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  for (unsigned int s = 1; s < blockDim.x; s *= 2) {
+    // modulo arithmetic is slow!
+    if ((tid % (2 * s)) == 0) {
+      sdata[tid] += sdata[tid + s];
+    }
+
+    cg::sync(cta);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) g_odata[blockIdx.x] = sdata[0];
+}
+
+/* This version uses contiguous threads, but its interleaved
+   addressing results in many shared memory bank conflicts.
+*/
+template <class T>
+__global__ void reduce1(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // load shared mem
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  sdata[tid] = (i < n) ? g_idata[i] : 0;
+
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  for (unsigned int s = 1; s < blockDim.x; s *= 2) {
+    int index = 2 * s * tid;
+
+    if (index < blockDim.x) {
+      sdata[index] += sdata[index + s];
+    }
+
+    cg::sync(cta);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) g_odata[blockIdx.x] = sdata[0];
+}
+
+/*
+    This version uses sequential addressing -- no divergence or bank conflicts.
+*/
+template <class T>
+__global__ void reduce2(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // load shared mem
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  sdata[tid] = (i < n) ? g_idata[i] : 0;
+
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) {
+      sdata[tid] += sdata[tid + s];
+    }
+
+    cg::sync(cta);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) g_odata[blockIdx.x] = sdata[0];
+}
+
+/*
+    This version uses n/2 threads --
+    it performs the first level of reduction when reading from global memory.
+*/
+template <class T>
+__global__ void reduce3(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+
+  T mySum = (i < n) ? g_idata[i] : 0;
+
+  if (i + blockDim.x < n) mySum += g_idata[i + blockDim.x];
+
+  sdata[tid] = mySum;
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) {
+      sdata[tid] = mySum = mySum + sdata[tid + s];
+    }
+
+    cg::sync(cta);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) g_odata[blockIdx.x] = mySum;
+}
+
+/*
+    This version uses the warp shuffle operation if available to reduce
+    warp synchronization. When shuffle is not available the final warp's
+    worth of work is unrolled to reduce looping overhead.
+
+    See
+   http://devblogs.nvidia.com/parallelforall/faster-parallel-reductions-kepler/
+    for additional information about using shuffle to perform a reduction
+    within a warp.
+
+    Note, this kernel needs a minimum of 64*sizeof(T) bytes of shared memory.
+    In other words if blockSize <= 32, allocate 64*sizeof(T) bytes.
+    If blockSize > 32, allocate blockSize*sizeof(T) bytes.
+*/
+template <class T, unsigned int blockSize>
+__global__ void reduce4(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+
+  T mySum = (i < n) ? g_idata[i] : 0;
+
+  if (i + blockSize < n) mySum += g_idata[i + blockSize];
+
+  sdata[tid] = mySum;
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
+    if (tid < s) {
+      sdata[tid] = mySum = mySum + sdata[tid + s];
+    }
+
+    cg::sync(cta);
+  }
+
+  cg::thread_block_tile<32> tile32 = cg::tiled_partition<32>(cta);
+
+  if (cta.thread_rank() < 32) {
+    // Fetch final intermediate sum from 2nd warp
+    if (blockSize >= 64) mySum += sdata[tid + 32];
+    // Reduce final warp using shuffle
+    for (int offset = tile32.size() / 2; offset > 0; offset /= 2) {
+      mySum += tile32.shfl_down(mySum, offset);
     }
   }
 
-  cudaDeviceProp deviceProp;
-  int dev;
+  // write result for this block to global mem
+  if (cta.thread_rank() == 0) g_odata[blockIdx.x] = mySum;
+}
 
-  dev = findCudaDevice(argc, (const char **)argv);
+/*
+    This version is completely unrolled, unless warp shuffle is available, then
+    shuffle is used within a loop.  It uses a template parameter to achieve
+    optimal code for any (power of 2) number of threads.  This requires a switch
+    statement in the host code to handle all the different thread block sizes at
+    compile time. When shuffle is available, it is used to reduce warp
+   synchronization.
 
-  checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
+    Note, this kernel needs a minimum of 64*sizeof(T) bytes of shared memory.
+    In other words if blockSize <= 32, allocate 64*sizeof(T) bytes.
+    If blockSize > 32, allocate blockSize*sizeof(T) bytes.
+*/
+template <class T, unsigned int blockSize>
+__global__ void reduce5(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
 
-  printf("Using Device %d: %s\n\n", dev, deviceProp.name);
-  checkCudaErrors(cudaSetDevice(dev));
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * (blockSize * 2) + threadIdx.x;
 
-  printf("Reducing array of type %s\n\n", getReduceTypeString(datatype));
+  T mySum = (i < n) ? g_idata[i] : 0;
 
-  bool bResult = false;
+  if (i + blockSize < n) mySum += g_idata[i + blockSize];
 
-  switch (datatype) {
-    default:
-    case REDUCE_INT:
-      bResult = runTest<int>(argc, argv, datatype);
-      break;
+  sdata[tid] = mySum;
+  cg::sync(cta);
 
-    case REDUCE_FLOAT:
-      bResult = runTest<float>(argc, argv, datatype);
-      break;
-
-    case REDUCE_DOUBLE:
-      bResult = runTest<double>(argc, argv, datatype);
-      break;
+  // do reduction in shared mem
+  if ((blockSize >= 512) && (tid < 256)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 256];
   }
 
-  printf(bResult ? "Test passed\n" : "Test failed!\n");
-}
+  cg::sync(cta);
 
-////////////////////////////////////////////////////////////////////////////////
-//! Compute sum reduction on CPU
-//! We use Kahan summation for an accurate sum of large arrays.
-//! http://en.wikipedia.org/wiki/Kahan_summation_algorithm
-//!
-//! @param data       pointer to input data
-//! @param size       number of input data elements
-////////////////////////////////////////////////////////////////////////////////
-template <class T>
-T reduceCPU(T *data, int size) {
-  T sum = data[0];
-  T c = (T)0.0;
-
-  for (int i = 1; i < size; i++) {
-    T y = data[i] - c;
-    T t = sum + y;
-    c = (t - sum) - y;
-    sum = t;
+  if ((blockSize >= 256) && (tid < 128)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 128];
   }
 
-  return sum;
+  cg::sync(cta);
+
+  if ((blockSize >= 128) && (tid < 64)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 64];
+  }
+
+  cg::sync(cta);
+
+  cg::thread_block_tile<32> tile32 = cg::tiled_partition<32>(cta);
+
+  if (cta.thread_rank() < 32) {
+    // Fetch final intermediate sum from 2nd warp
+    if (blockSize >= 64) mySum += sdata[tid + 32];
+    // Reduce final warp using shuffle
+    for (int offset = tile32.size() / 2; offset > 0; offset /= 2) {
+      mySum += tile32.shfl_down(mySum, offset);
+    }
+  }
+
+  // write result for this block to global mem
+  if (cta.thread_rank() == 0) g_odata[blockIdx.x] = mySum;
 }
 
-unsigned int nextPow2(unsigned int x) {
-  --x;
-  x |= x >> 1;
-  x |= x >> 2;
-  x |= x >> 4;
-  x |= x >> 8;
-  x |= x >> 16;
-  return ++x;
-}
+/*
+    This version adds multiple elements per thread sequentially.  This reduces
+   the overall cost of the algorithm while keeping the work complexity O(n) and
+   the step complexity O(log n). (Brent's Theorem optimization)
 
-#ifndef MIN
-#define MIN(x, y) ((x < y) ? x : y)
-#endif
+    Note, this kernel needs a minimum of 64*sizeof(T) bytes of shared memory.
+    In other words if blockSize <= 32, allocate 64*sizeof(T) bytes.
+    If blockSize > 32, allocate blockSize*sizeof(T) bytes.
+*/
+template <class T, unsigned int blockSize, bool nIsPow2>
+__global__ void reduce6(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
 
-////////////////////////////////////////////////////////////////////////////////
-// Compute the number of threads and blocks to use for the given reduction
-// kernel For the kernels >= 3, we set threads / block to the minimum of
-// maxThreads and n/2. For kernels < 3, we set to the minimum of maxThreads and
-// n.  For kernel 6, we observe the maximum specified number of blocks, because
-// each thread in that kernel can process a variable number of elements.
-////////////////////////////////////////////////////////////////////////////////
-void getNumBlocksAndThreads(int whichKernel, int n, int maxBlocks,
-                            int maxThreads, int &blocks, int &threads) {
-  // get device capability, to avoid block/grid size exceed the upper bound
-  cudaDeviceProp prop;
-  int device;
-  checkCudaErrors(cudaGetDevice(&device));
-  checkCudaErrors(cudaGetDeviceProperties(&prop, device));
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int gridSize = blockSize * gridDim.x;
 
-  if (whichKernel < 3) {
-    threads = (n < maxThreads) ? nextPow2(n) : maxThreads;
-    blocks = (n + threads - 1) / threads;
+  T mySum = 0;
+
+  // we reduce multiple elements per thread.  The number is determined by the
+  // number of active thread blocks (via gridDim).  More blocks will result
+  // in a larger gridSize and therefore fewer elements per thread
+  if (nIsPow2) {
+    unsigned int i = blockIdx.x * blockSize * 2 + threadIdx.x;
+    gridSize = gridSize << 1;
+
+    while (i < n) {
+      mySum += g_idata[i];
+      // ensure we don't read out of bounds -- this is optimized away for
+      // powerOf2 sized arrays
+      if ((i + blockSize) < n) {
+        mySum += g_idata[i + blockSize];
+      }
+      i += gridSize;
+    }
   } else {
-    threads = (n < maxThreads * 2) ? nextPow2((n + 1) / 2) : maxThreads;
-    blocks = (n + (threads * 2 - 1)) / (threads * 2);
+    unsigned int i = blockIdx.x * blockSize + threadIdx.x;
+    while (i < n) {
+      mySum += g_idata[i];
+      i += gridSize;
+    }
   }
 
-  if ((float)threads * blocks >
-      (float)prop.maxGridSize[0] * prop.maxThreadsPerBlock) {
-    printf("n is too large, please choose a smaller number!\n");
+  // each thread puts its local sum into shared memory
+  sdata[tid] = mySum;
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  if ((blockSize >= 512) && (tid < 256)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 256];
   }
 
-  if (blocks > prop.maxGridSize[0]) {
-    printf(
-        "Grid size <%d> exceeds the device capability <%d>, set block size as "
-        "%d (original %d)\n",
-        blocks, prop.maxGridSize[0], threads * 2, threads);
+  cg::sync(cta);
 
-    blocks /= 2;
-    threads *= 2;
+  if ((blockSize >= 256) && (tid < 128)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 128];
   }
 
-  if (whichKernel >= 6) {
-    blocks = MIN(maxBlocks, blocks);
+  cg::sync(cta);
+
+  if ((blockSize >= 128) && (tid < 64)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 64];
+  }
+
+  cg::sync(cta);
+
+  cg::thread_block_tile<32> tile32 = cg::tiled_partition<32>(cta);
+
+  if (cta.thread_rank() < 32) {
+    // Fetch final intermediate sum from 2nd warp
+    if (blockSize >= 64) mySum += sdata[tid + 32];
+    // Reduce final warp using shuffle
+    for (int offset = tile32.size() / 2; offset > 0; offset /= 2) {
+      mySum += tile32.shfl_down(mySum, offset);
+    }
+  }
+
+  // write result for this block to global mem
+  if (cta.thread_rank() == 0) g_odata[blockIdx.x] = mySum;
+}
+
+template <typename T, unsigned int blockSize, bool nIsPow2>
+__global__ void reduce7(const T *__restrict__ g_idata, T *__restrict__ g_odata,
+                        unsigned int n) {
+  T *sdata = SharedMemory<T>();
+
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int gridSize = blockSize * gridDim.x;
+  unsigned int maskLength = (blockSize & 31);  // 31 = warpSize-1
+  maskLength = (maskLength > 0) ? (32 - maskLength) : maskLength;
+  const unsigned int mask = (0xffffffff) >> maskLength;
+
+  T mySum = 0;
+
+  // we reduce multiple elements per thread.  The number is determined by the
+  // number of active thread blocks (via gridDim).  More blocks will result
+  // in a larger gridSize and therefore fewer elements per thread
+  if (nIsPow2) {
+    unsigned int i = blockIdx.x * blockSize * 2 + threadIdx.x;
+    gridSize = gridSize << 1;
+
+    while (i < n) {
+      mySum += g_idata[i];
+      // ensure we don't read out of bounds -- this is optimized away for
+      // powerOf2 sized arrays
+      if ((i + blockSize) < n) {
+        mySum += g_idata[i + blockSize];
+      }
+      i += gridSize;
+    }
+  } else {
+    unsigned int i = blockIdx.x * blockSize + threadIdx.x;
+    while (i < n) {
+      mySum += g_idata[i];
+      i += gridSize;
+    }
+  }
+
+  // Reduce within warp using shuffle or reduce_add if T==int & CUDA_ARCH ==
+  // SM 8.0
+  mySum = warpReduceSum<T>(mask, mySum);
+
+  // each thread puts its local sum into shared memory
+  if ((tid % warpSize) == 0) {
+    sdata[tid / warpSize] = mySum;
+  }
+
+  __syncthreads();
+
+  const unsigned int shmem_extent =
+      (blockSize / warpSize) > 0 ? (blockSize / warpSize) : 1;
+  const unsigned int ballot_result = __ballot_sync(mask, tid < shmem_extent);
+  if (tid < shmem_extent) {
+    mySum = sdata[tid];
+    // Reduce final warp using shuffle or reduce_add if T==int & CUDA_ARCH ==
+    // SM 8.0
+    mySum = warpReduceSum<T>(ballot_result, mySum);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) {
+    g_odata[blockIdx.x] = mySum;
   }
 }
 
+// Performs a reduction step and updates numTotal with how many are remaining
+template <typename T, typename Group>
+__device__ T cg_reduce_n(T in, Group &threads) {
+  return cg::reduce(threads, in, cg::plus<T>());
+}
+
+template <class T>
+__global__ void cg_reduce(T *g_idata, T *g_odata, unsigned int n) {
+  // Shared memory for intermediate steps
+  T *sdata = SharedMemory<T>();
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  // Handle to tile in thread block
+  cg::thread_block_tile<32> tile = cg::tiled_partition<32>(cta);
+
+  unsigned int ctaSize = cta.size();
+  unsigned int numCtas = gridDim.x;
+  unsigned int threadRank = cta.thread_rank();
+  unsigned int threadIndex = (blockIdx.x * ctaSize) + threadRank;
+
+  T threadVal = 0;
+  {
+    unsigned int i = threadIndex;
+    unsigned int indexStride = (numCtas * ctaSize);
+    while (i < n) {
+      threadVal += g_idata[i];
+      i += indexStride;
+    }
+    sdata[threadRank] = threadVal;
+  }
+
+  // Wait for all tiles to finish and reduce within CTA
+  {
+    unsigned int ctaSteps = tile.meta_group_size();
+    unsigned int ctaIndex = ctaSize >> 1;
+    while (ctaIndex >= 32) {
+      cta.sync();
+      if (threadRank < ctaIndex) {
+        threadVal += sdata[threadRank + ctaIndex];
+        sdata[threadRank] = threadVal;
+      }
+      ctaSteps >>= 1;
+      ctaIndex >>= 1;
+    }
+  }
+
+  // Shuffle redux instead of smem redux
+  {
+    cta.sync();
+    if (tile.meta_group_rank() == 0) {
+      threadVal = cg_reduce_n(threadVal, tile);
+    }
+  }
+
+  if (threadRank == 0) g_odata[blockIdx.x] = threadVal;
+}
+
+template <class T, size_t BlockSize, size_t MultiWarpGroupSize>
+__global__ void multi_warp_cg_reduce(T *g_idata, T *g_odata, unsigned int n) {
+  // Shared memory for intermediate steps
+  T *sdata = SharedMemory<T>();
+  __shared__ cg::block_tile_memory<BlockSize> scratch;
+
+  // Handle to thread block group
+  auto cta = cg::this_thread_block(scratch);
+  // Handle to multiWarpTile in thread block
+  auto multiWarpTile = cg::tiled_partition<MultiWarpGroupSize>(cta);
+
+  unsigned int gridSize = BlockSize * gridDim.x;
+  T threadVal = 0;
+
+  // we reduce multiple elements per thread.  The number is determined by the
+  // number of active thread blocks (via gridDim).  More blocks will result
+  // in a larger gridSize and therefore fewer elements per thread
+  int nIsPow2 = !(n & n-1);
+  if (nIsPow2) {
+    unsigned int i = blockIdx.x * BlockSize * 2 + threadIdx.x;
+    gridSize = gridSize << 1;
+
+    while (i < n) {
+      threadVal += g_idata[i];
+      // ensure we don't read out of bounds -- this is optimized away for
+      // powerOf2 sized arrays
+      if ((i + BlockSize) < n) {
+        threadVal += g_idata[i + blockDim.x];
+      }
+      i += gridSize;
+    }
+  } else {
+    unsigned int i = blockIdx.x * BlockSize + threadIdx.x;
+    while (i < n) {
+      threadVal += g_idata[i];
+      i += gridSize;
+    }
+  }
+
+  threadVal = cg_reduce_n(threadVal, multiWarpTile);
+
+  if (multiWarpTile.thread_rank() == 0) {
+    sdata[multiWarpTile.meta_group_rank()] = threadVal;
+  }
+  cg::sync(cta);
+
+  if (threadIdx.x == 0) {
+    threadVal = 0;
+    for (int i=0; i < multiWarpTile.meta_group_size(); i++) {
+      threadVal += sdata[i];
+    }
+    g_odata[blockIdx.x] = threadVal;
+  }
+}
+
+extern "C" bool isPow2(unsigned int x);
+
 ////////////////////////////////////////////////////////////////////////////////
-// This function performs a reduction of the input data multiple times and
-// measures the average reduction time.
+// Wrapper function for kernel launch
 ////////////////////////////////////////////////////////////////////////////////
 template <class T>
-T benchmarkReduce(int n, int numThreads, int numBlocks, int maxThreads,
-                  int maxBlocks, int whichKernel, int testIterations,
-                  bool cpuFinalReduction, int cpuFinalThreshold,
-                  StopWatchInterface *timer, T *h_odata, T *d_idata,
-                  T *d_odata) {
-  T gpu_result = 0;
-  bool needReadBack = true;
+void reduce(int size, int threads, int blocks, int whichKernel, T *d_idata,
+            T *d_odata) {
+  dim3 dimBlock(threads, 1, 1);
+  dim3 dimGrid(blocks, 1, 1);
 
-  T *d_intermediateSums;
-  checkCudaErrors(
-      cudaMalloc((void **)&d_intermediateSums, sizeof(T) * numBlocks));
+  // when there is only one warp per block, we need to allocate two warps
+  // worth of shared memory so that we don't index shared memory out of bounds
+  int smemSize =
+      (threads <= 32) ? 2 * threads * sizeof(T) : threads * sizeof(T);
 
-  for (int i = 0; i < testIterations; ++i) {
-    gpu_result = 0;
+  // as kernel 9 - multi_warp_cg_reduce cannot work for more than 64 threads
+  // we choose to set kernel 7 for this purpose.
+  if (threads < 64 && whichKernel == 9)
+  {
+    whichKernel = 7;
+  }
 
-    cudaDeviceSynchronize();
-    sdkStartTimer(&timer);
+  // choose which of the optimized versions of reduction to launch
+  switch (whichKernel) {
+    case 0:
+      reduce0<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-    // execute the kernel
-    reduce<T>(n, numThreads, numBlocks, whichKernel, d_idata, d_odata);
+    case 1:
+      reduce1<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-    // check if kernel execution generated an error
-    getLastCudaError("Kernel execution failed");
+    case 2:
+      reduce2<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-    if (cpuFinalReduction) {
-      // sum partial sums from each block on CPU
-      // copy result from device to host
-      checkCudaErrors(cudaMemcpy(h_odata, d_odata, numBlocks * sizeof(T),
-                                 cudaMemcpyDeviceToHost));
+    case 3:
+      reduce3<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-      for (int i = 0; i < numBlocks; i++) {
-        gpu_result += h_odata[i];
+    case 4:
+      switch (threads) {
+        case 512:
+          reduce4<T, 512>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 256:
+          reduce4<T, 256>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 128:
+          reduce4<T, 128>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 64:
+          reduce4<T, 64>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 32:
+          reduce4<T, 32>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 16:
+          reduce4<T, 16>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 8:
+          reduce4<T, 8>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 4:
+          reduce4<T, 4>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 2:
+          reduce4<T, 2>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 1:
+          reduce4<T, 1>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
       }
 
-      needReadBack = false;
-    } else {
-      // sum partial block sums on GPU
-      int s = numBlocks;
-      int kernel = whichKernel;
+      break;
 
-      while (s > cpuFinalThreshold) {
-        int threads = 0, blocks = 0;
-        getNumBlocksAndThreads(kernel, s, maxBlocks, maxThreads, blocks,
-                               threads);
-        checkCudaErrors(cudaMemcpy(d_intermediateSums, d_odata, s * sizeof(T),
-                                   cudaMemcpyDeviceToDevice));
-        reduce<T>(s, threads, blocks, kernel, d_intermediateSums, d_odata);
+    case 5:
+      switch (threads) {
+        case 512:
+          reduce5<T, 512>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
 
-        if (kernel < 3) {
-          s = (s + threads - 1) / threads;
-        } else {
-          s = (s + (threads * 2 - 1)) / (threads * 2);
+        case 256:
+          reduce5<T, 256>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 128:
+          reduce5<T, 128>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 64:
+          reduce5<T, 64>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 32:
+          reduce5<T, 32>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 16:
+          reduce5<T, 16>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 8:
+          reduce5<T, 8>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 4:
+          reduce5<T, 4>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 2:
+          reduce5<T, 2>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 1:
+          reduce5<T, 1>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+      }
+
+      break;
+
+    case 6:
+      if (isPow2(size)) {
+        switch (threads) {
+          case 512:
+            reduce6<T, 512, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 256:
+            reduce6<T, 256, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 128:
+            reduce6<T, 128, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 64:
+            reduce6<T, 64, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 32:
+            reduce6<T, 32, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 16:
+            reduce6<T, 16, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 8:
+            reduce6<T, 8, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 4:
+            reduce6<T, 4, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 2:
+            reduce6<T, 2, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 1:
+            reduce6<T, 1, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+        }
+      } else {
+        switch (threads) {
+          case 512:
+            reduce6<T, 512, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 256:
+            reduce6<T, 256, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 128:
+            reduce6<T, 128, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 64:
+            reduce6<T, 64, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 32:
+            reduce6<T, 32, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 16:
+            reduce6<T, 16, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 8:
+            reduce6<T, 8, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 4:
+            reduce6<T, 4, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 2:
+            reduce6<T, 2, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 1:
+            reduce6<T, 1, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
         }
       }
 
-      if (s > 1) {
-        // copy result from device to host
-        checkCudaErrors(cudaMemcpy(h_odata, d_odata, s * sizeof(T),
-                                   cudaMemcpyDeviceToHost));
+      break;
 
-        for (int i = 0; i < s; i++) {
-          gpu_result += h_odata[i];
+    case 7:
+      // For reduce7 kernel we require only blockSize/warpSize
+      // number of elements in shared memory
+      smemSize = ((threads / 32) + 1) * sizeof(T);
+      if (isPow2(size)) {
+        switch (threads) {
+          case 1024:
+            reduce7<T, 1024, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+          case 512:
+            reduce7<T, 512, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 256:
+            reduce7<T, 256, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 128:
+            reduce7<T, 128, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 64:
+            reduce7<T, 64, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 32:
+            reduce7<T, 32, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 16:
+            reduce7<T, 16, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 8:
+            reduce7<T, 8, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 4:
+            reduce7<T, 4, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 2:
+            reduce7<T, 2, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 1:
+            reduce7<T, 1, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
         }
+      } else {
+        switch (threads) {
+          case 1024:
+            reduce7<T, 1024, true>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+          case 512:
+            reduce7<T, 512, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
 
-        needReadBack = false;
+          case 256:
+            reduce7<T, 256, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 128:
+            reduce7<T, 128, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 64:
+            reduce7<T, 64, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 32:
+            reduce7<T, 32, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 16:
+            reduce7<T, 16, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 8:
+            reduce7<T, 8, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 4:
+            reduce7<T, 4, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 2:
+            reduce7<T, 2, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+
+          case 1:
+            reduce7<T, 1, false>
+                <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+            break;
+        }
       }
-    }
 
-    cudaDeviceSynchronize();
-    sdkStopTimer(&timer);
-  }
+      break;
+    case 8:
+      cg_reduce<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
+    case 9:
+      constexpr int numOfMultiWarpGroups = 2;
+      smemSize = numOfMultiWarpGroups * sizeof(T);
+      switch (threads) {
+        case 1024:
+          multi_warp_cg_reduce<T, 1024, 1024/numOfMultiWarpGroups>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
 
-  if (needReadBack) {
-    // copy final sum from device to host
-    checkCudaErrors(
-        cudaMemcpy(&gpu_result, d_odata, sizeof(T), cudaMemcpyDeviceToHost));
+        case 512:
+          multi_warp_cg_reduce<T, 512, 512/numOfMultiWarpGroups>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 256:
+          multi_warp_cg_reduce<T, 256, 256/numOfMultiWarpGroups>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 128:
+          multi_warp_cg_reduce<T, 128, 128/numOfMultiWarpGroups>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        case 64:
+          multi_warp_cg_reduce<T, 64, 64/numOfMultiWarpGroups>
+              <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+          break;
+
+        default:
+          printf("thread block size of < 64 is not supported for this kernel\n");
+          break;
+      }
+      break;
   }
-  checkCudaErrors(cudaFree(d_intermediateSums));
-  return gpu_result;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// This function calls benchmarkReduce multiple times for a range of array sizes
-// and prints a report in CSV (comma-separated value) format that can be used
-// for generating a "shmoo" plot showing the performance for each kernel
-// variation over a wide range of input sizes.
-////////////////////////////////////////////////////////////////////////////////
-template <class T>
-void shmoo(int minN, int maxN, int maxThreads, int maxBlocks,
-           ReduceType datatype) {
-  // create random input data on CPU
-  unsigned int bytes = maxN * sizeof(T);
+// Instantiate the reduction function for 3 types
+template void reduce<int>(int size, int threads, int blocks, int whichKernel,
+                          int *d_idata, int *d_odata);
 
-  T *h_idata = (T *)malloc(bytes);
+template void reduce<float>(int size, int threads, int blocks, int whichKernel,
+                            float *d_idata, float *d_odata);
 
-  for (int i = 0; i < maxN; i++) {
-    // Keep the numbers small so we don't get truncation error in the sum
-    if (datatype == REDUCE_INT) {
-      h_idata[i] = (T)(rand() & 0xFF);
-    } else {
-      h_idata[i] = (rand() & 0xFF) / (T)RAND_MAX;
-    }
-  }
+template void reduce<double>(int size, int threads, int blocks, int whichKernel,
+                             double *d_idata, double *d_odata);
 
-  int maxNumBlocks = MIN(maxN / maxThreads, MAX_BLOCK_DIM_SIZE);
-
-  // allocate mem for the result on host side
-  T *h_odata = (T *)malloc(maxNumBlocks * sizeof(T));
-
-  // allocate device memory and data
-  T *d_idata = NULL;
-  T *d_odata = NULL;
-
-  checkCudaErrors(cudaMalloc((void **)&d_idata, bytes));
-  checkCudaErrors(cudaMalloc((void **)&d_odata, maxNumBlocks * sizeof(T)));
-
-  // copy data directly to device memory
-  checkCudaErrors(cudaMemcpy(d_idata, h_idata, bytes, cudaMemcpyHostToDevice));
-  checkCudaErrors(cudaMemcpy(d_odata, h_idata, maxNumBlocks * sizeof(T),
-                             cudaMemcpyHostToDevice));
-
-  // warm-up
-  for (int kernel = 0; kernel < 8; kernel++) {
-    reduce<T>(maxN, maxThreads, maxNumBlocks, kernel, d_idata, d_odata);
-  }
-
-  int testIterations = 100;
-
-  StopWatchInterface *timer = 0;
-  sdkCreateTimer(&timer);
-
-  // print headers
-  printf(
-      "Time in milliseconds for various numbers of elements for each "
-      "kernel\n\n\n");
-  printf("Kernel");
-
-  for (int i = minN; i <= maxN; i *= 2) {
-    printf(", %d", i);
-  }
-
-  for (int kernel = 0; kernel < 8; kernel++) {
-    printf("\n%d", kernel);
-
-    for (int i = minN; i <= maxN; i *= 2) {
-      sdkResetTimer(&timer);
-      int numBlocks = 0;
-      int numThreads = 0;
-      getNumBlocksAndThreads(kernel, i, maxBlocks, maxThreads, numBlocks,
-                             numThreads);
-
-      float reduceTime;
-
-      if (numBlocks <= MAX_BLOCK_DIM_SIZE) {
-        benchmarkReduce(i, numThreads, numBlocks, maxThreads, maxBlocks, kernel,
-                        testIterations, false, 1, timer, h_odata, d_idata,
-                        d_odata);
-        reduceTime = sdkGetAverageTimerValue(&timer);
-      } else {
-        reduceTime = -1.0;
-      }
-
-      printf(", %.5f", reduceTime);
-    }
-  }
-
-  // cleanup
-  sdkDeleteTimer(&timer);
-  free(h_idata);
-  free(h_odata);
-
-  checkCudaErrors(cudaFree(d_idata));
-  checkCudaErrors(cudaFree(d_odata));
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// The main function which runs the reduction test.
-////////////////////////////////////////////////////////////////////////////////
-template <class T>
-bool runTest(int argc, char **argv, ReduceType datatype) {
-  int size = 1 << 24;    // number of elements to reduce
-  int maxThreads = 256;  // number of threads per block
-  int whichKernel = 7;
-  int maxBlocks = 64;
-  bool cpuFinalReduction = false;
-  int cpuFinalThreshold = 1;
-
-  if (checkCmdLineFlag(argc, (const char **)argv, "n")) {
-    size = getCmdLineArgumentInt(argc, (const char **)argv, "n");
-  }
-
-  if (checkCmdLineFlag(argc, (const char **)argv, "threads")) {
-    maxThreads = getCmdLineArgumentInt(argc, (const char **)argv, "threads");
-  }
-
-  if (checkCmdLineFlag(argc, (const char **)argv, "kernel")) {
-    whichKernel = getCmdLineArgumentInt(argc, (const char **)argv, "kernel");
-  }
-
-  if (checkCmdLineFlag(argc, (const char **)argv, "maxblocks")) {
-    maxBlocks = getCmdLineArgumentInt(argc, (const char **)argv, "maxblocks");
-  }
-
-  printf("%d elements\n", size);
-  printf("%d threads (max)\n", maxThreads);
-
-  cpuFinalReduction = checkCmdLineFlag(argc, (const char **)argv, "cpufinal");
-
-  if (checkCmdLineFlag(argc, (const char **)argv, "cputhresh")) {
-    cpuFinalThreshold =
-        getCmdLineArgumentInt(argc, (const char **)argv, "cputhresh");
-  }
-
-  bool runShmoo = checkCmdLineFlag(argc, (const char **)argv, "shmoo");
-
-  if (runShmoo) {
-    shmoo<T>(1, 33554432, maxThreads, maxBlocks, datatype);
-  } else {
-    // create random input data on CPU
-    unsigned int bytes = size * sizeof(T);
-
-    T *h_idata = (T *)malloc(bytes);
-
-    for (int i = 0; i < size; i++) {
-      // Keep the numbers small so we don't get truncation error in the sum
-      if (datatype == REDUCE_INT) {
-        h_idata[i] = (T)(rand() & 0xFF);
-      } else {
-        h_idata[i] = (rand() & 0xFF) / (T)RAND_MAX;
-      }
-    }
-
-    int numBlocks = 0;
-    int numThreads = 0;
-    getNumBlocksAndThreads(whichKernel, size, maxBlocks, maxThreads, numBlocks,
-                           numThreads);
-
-    if (numBlocks == 1) {
-      cpuFinalThreshold = 1;
-    }
-
-    // allocate mem for the result on host side
-    T *h_odata = (T *)malloc(numBlocks * sizeof(T));
-
-    printf("%d blocks\n\n", numBlocks);
-
-    // allocate device memory and data
-    T *d_idata = NULL;
-    T *d_odata = NULL;
-
-    checkCudaErrors(cudaMalloc((void **)&d_idata, bytes));
-    checkCudaErrors(cudaMalloc((void **)&d_odata, numBlocks * sizeof(T)));
-
-    // copy data directly to device memory
-    checkCudaErrors(
-        cudaMemcpy(d_idata, h_idata, bytes, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_odata, h_idata, numBlocks * sizeof(T),
-                               cudaMemcpyHostToDevice));
-
-    // warm-up
-    reduce<T>(size, numThreads, numBlocks, whichKernel, d_idata, d_odata);
-
-    int testIterations = 100;
-
-    StopWatchInterface *timer = 0;
-    sdkCreateTimer(&timer);
-
-    T gpu_result = 0;
-
-    gpu_result =
-        benchmarkReduce<T>(size, numThreads, numBlocks, maxThreads, maxBlocks,
-                           whichKernel, testIterations, cpuFinalReduction,
-                           cpuFinalThreshold, timer, h_odata, d_idata, d_odata);
-
-    double reduceTime = sdkGetAverageTimerValue(&timer) * 1e-3;
-    printf(
-        "Reduction, Throughput = %.4f GB/s, Time = %.5f s, Size = %u Elements, "
-        "NumDevsUsed = %d, Workgroup = %u\n",
-        1.0e-9 * ((double)bytes) / reduceTime, reduceTime, size, 1, numThreads);
-
-    // compute reference solution
-    T cpu_result = reduceCPU<T>(h_idata, size);
-
-    int precision = 0;
-    double threshold = 0;
-    double diff = 0;
-
-    if (datatype == REDUCE_INT) {
-      printf("\nGPU result = %d\n", (int)gpu_result);
-      printf("CPU result = %d\n\n", (int)cpu_result);
-    } else {
-      if (datatype == REDUCE_FLOAT) {
-        precision = 8;
-        threshold = 1e-8 * size;
-      } else {
-        precision = 12;
-        threshold = 1e-12 * size;
-      }
-
-      printf("\nGPU result = %.*f\n", precision, (double)gpu_result);
-      printf("CPU result = %.*f\n\n", precision, (double)cpu_result);
-
-      diff = fabs((double)gpu_result - (double)cpu_result);
-    }
-
-    // cleanup
-    sdkDeleteTimer(&timer);
-    free(h_idata);
-    free(h_odata);
-
-    checkCudaErrors(cudaFree(d_idata));
-    checkCudaErrors(cudaFree(d_odata));
-
-    if (datatype == REDUCE_INT) {
-      return (gpu_result == cpu_result);
-    } else {
-      return (diff < threshold);
-    }
-  }
-
-  return true;
-}
+#endif  // #ifndef _REDUCE_KERNEL_H_
