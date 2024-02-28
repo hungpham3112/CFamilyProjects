@@ -19,7 +19,7 @@ CADNALDFLAGS=  -L../lib -lcadnaC -DHALF
 
 
 
-all :   cfmatmul add_loop_combGPU_cad_half add_loop_membGPU_cad_half mul_loop_membGPU_cad_half mul_loop_combGPU_cad_half test_reduction_half #mullerTest muller
+all :   cfmatmul add_loop_combGPU_cad_half add_loop_membGPU_cad_half mul_loop_membGPU_cad_half mul_loop_combGPU_cad_half #mullerTest muller
 #essai_rndg
 
 
@@ -94,8 +94,8 @@ mul_loop_membGPU_cad_half : mul_loop_GPU_cad_half.cu
 	nvcc -g -G $(CFLAGSTITAN)  $< -o $@   $(CADNALDFLAGS) -O3 -DCADNA -DNUMCHECK -DNLOOP=1
 
 
-test_reduction_half : test_reduction_half.cu
-	nvcc -g -G $(CFLAGSTITAN)  $< -o $@   $(CADNALDFLAGS) -O3 -DCADNA -DNUMCHECK 
+
+
 
 
 
@@ -103,5 +103,5 @@ essai_rndg : essai_rndg.cu
 	nvcc -v $(CFLAGS) essai_rndg.cu -o essai_rndg   $(CADNALDFLAGS)
 
 clean :
-	rm -f *.o cfmatmul mandelbrot add_loop_combGPU_cad_half add_loop_membGPU_cad_half mul_loop_membGPU_cad_half mul_loop_combGPU_cad_half test_reduction_half #mullerTest muller #essai_rndg
+	rm -f *.o cfmatmul mandelbrot add_loop_combGPU_cad_half add_loop_membGPU_cad_half mul_loop_membGPU_cad_half mul_loop_combGPU_cad_half #mullerTest muller #essai_rndg
 

@@ -71,8 +71,16 @@
 
 // includes, project
 #include "reduction.h"
+#include <cadna.h>
+#include <cadna_gpu.h>
 
-enum ReduceType { REDUCE_INT, REDUCE_FLOAT, REDUCE_DOUBLE };
+enum ReduceType {
+  REDUCE_INT,
+  REDUCE_FLOAT,
+  REDUCE_DOUBLE,
+  REDUCE_CAD_FLOAT,
+  REDUCE_CAD_DOUBLE,
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // declaration, forward
@@ -94,6 +102,10 @@ const char *getReduceTypeString(const ReduceType type) {
     return "float";
   case REDUCE_DOUBLE:
     return "double";
+  case REDUCE_CAD_DOUBLE:
+    return "double_st";
+  case REDUCE_CAD_FLOAT:
+    return "float_st";
   default:
     return "unknown";
   }
@@ -247,7 +259,7 @@ T benchmarkReduce(int n, int numThreads, int numBlocks, int maxThreads,
 
   T *d_intermediateSums;
   checkCudaErrors(
-      cudaMalloc((void **)&d_intermediateSums, sizeof(T) * numBlocks));
+  cudaMalloc((void **)&d_intermediateSums, sizeof(T) * numBlocks));
 
   for (int i = 0; i < testIterations; ++i) {
     gpu_result = 0;
@@ -504,8 +516,7 @@ template <class T> bool runTest(int argc, char **argv, ReduceType datatype) {
 
     T gpu_result = 0;
 
-    gpu_result =
-        benchmarkReduce<T>(size, numThreads, numBlocks, maxThreads, maxBlocks,
+    gpu_result = benchmarkReduce<T>(size, numThreads, numBlocks, maxThreads, maxBlocks,
                            whichKernel, testIterations, cpuFinalReduction,
                            cpuFinalThreshold, timer, h_odata, d_idata, d_odata);
 

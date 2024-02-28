@@ -35,6 +35,8 @@
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 #include <stdio.h>
+#include <cadna.h>
+#include <cadna_gpu.h>
 
 namespace cg = cooperative_groups;
 
@@ -1033,5 +1035,11 @@ template void reduce<float>(int size, int threads, int blocks, int whichKernel,
 
 template void reduce<double>(int size, int threads, int blocks, int whichKernel,
                              double *d_idata, double *d_odata);
+
+// template void reduce<float_gpu_st>(int size, int threads, int blocks, int whichKernel,
+//                              double *d_idata, double *d_odata);
+
+// template void reduce<half_gpu_st>(int size, int threads, int blocks, int whichKernel,
+//                              double *d_idata, double *d_odata);
 
 #endif  // #ifndef _REDUCE_KERNEL_H_
