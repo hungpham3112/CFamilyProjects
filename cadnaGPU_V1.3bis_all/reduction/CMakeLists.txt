@@ -19,7 +19,7 @@ set(TORCH_INCLUDE_DIRS
     ${TORCH_INSTALL_PREFIX}/include/torch/csrc/api/include)
 
 set(HELPER_CUDA "$ENV{HOME}/cadnaGPU_V1.3bis_all/cuda-samples/Common/")
-set(CMAKE_CXX_COMPILER "clang++")
+set(CMAKE_CXX_COMPILER "g++")
 set(CUTLASS_INCLUDE_DIRS "/cutlass/include/")
 set(Python3_INCLUDE_DIRS "$ENV{HOME}/miniforge3/envs/School/include/python3.11/")
 set(CADNA 
