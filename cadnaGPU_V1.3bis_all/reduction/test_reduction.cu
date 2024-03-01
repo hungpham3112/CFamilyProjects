@@ -93,6 +93,440 @@ __global__ void reduce0(T *g_idata, T *g_odata, unsigned int n) {
     g_odata[blockIdx.x] = sdata[0];
 }
 
+template <class T>
+__global__ void reduce1(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // load shared mem
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  sdata[tid] = (i < n) ? g_idata[i] : 0;
+
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  for (unsigned int s = 1; s < blockDim.x; s *= 2) {
+    int index = 2 * s * tid;
+
+    if (index < blockDim.x) {
+      sdata[index] += sdata[index + s];
+    }
+
+    cg::sync(cta);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) g_odata[blockIdx.x] = sdata[0];
+}
+
+template <class T>
+__global__ void reduce2(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // load shared mem
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  sdata[tid] = (i < n) ? g_idata[i] : 0;
+
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) {
+      sdata[tid] += sdata[tid + s];
+    }
+
+    cg::sync(cta);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) g_odata[blockIdx.x] = sdata[0];
+}
+
+template <class T>
+__global__ void reduce3(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+
+  T mySum = (i < n) ? g_idata[i] : 0;
+
+  if (i + blockDim.x < n) mySum += g_idata[i + blockDim.x];
+
+  sdata[tid] = mySum;
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) {
+      sdata[tid] = mySum = mySum + sdata[tid + s];
+    }
+
+    cg::sync(cta);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) g_odata[blockIdx.x] = mySum;
+}
+
+template <class T, unsigned int blockSize>
+__global__ void reduce4(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+
+  T mySum = (i < n) ? g_idata[i] : 0;
+
+  if (i + blockSize < n) mySum += g_idata[i + blockSize];
+
+  sdata[tid] = mySum;
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
+    if (tid < s) {
+      sdata[tid] = mySum = mySum + sdata[tid + s];
+    }
+
+    cg::sync(cta);
+  }
+
+  cg::thread_block_tile<32> tile32 = cg::tiled_partition<32>(cta);
+
+  if (cta.thread_rank() < 32) {
+    // Fetch final intermediate sum from 2nd warp
+    if (blockSize >= 64) mySum += sdata[tid + 32];
+    // Reduce final warp using shuffle
+    for (int offset = tile32.size() / 2; offset > 0; offset /= 2) {
+      mySum += tile32.shfl_down(mySum, offset);
+    }
+  }
+
+  // write result for this block to global mem
+  if (cta.thread_rank() == 0) g_odata[blockIdx.x] = mySum;
+}
+
+template <class T, unsigned int blockSize>
+__global__ void reduce5(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x * (blockSize * 2) + threadIdx.x;
+
+  T mySum = (i < n) ? g_idata[i] : 0;
+
+  if (i + blockSize < n) mySum += g_idata[i + blockSize];
+
+  sdata[tid] = mySum;
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  if ((blockSize >= 512) && (tid < 256)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 256];
+  }
+
+  cg::sync(cta);
+
+  if ((blockSize >= 256) && (tid < 128)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 128];
+  }
+
+  cg::sync(cta);
+
+  if ((blockSize >= 128) && (tid < 64)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 64];
+  }
+
+  cg::sync(cta);
+
+  cg::thread_block_tile<32> tile32 = cg::tiled_partition<32>(cta);
+
+  if (cta.thread_rank() < 32) {
+    // Fetch final intermediate sum from 2nd warp
+    if (blockSize >= 64) mySum += sdata[tid + 32];
+    // Reduce final warp using shuffle
+    for (int offset = tile32.size() / 2; offset > 0; offset /= 2) {
+      mySum += tile32.shfl_down(mySum, offset);
+    }
+  }
+
+  // write result for this block to global mem
+  if (cta.thread_rank() == 0) g_odata[blockIdx.x] = mySum;
+}
+
+template <class T, unsigned int blockSize, bool nIsPow2>
+__global__ void reduce6(T *g_idata, T *g_odata, unsigned int n) {
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  T *sdata = SharedMemory<T>();
+
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int gridSize = blockSize * gridDim.x;
+
+  T mySum = 0;
+
+  // we reduce multiple elements per thread.  The number is determined by the
+  // number of active thread blocks (via gridDim).  More blocks will result
+  // in a larger gridSize and therefore fewer elements per thread
+  if (nIsPow2) {
+    unsigned int i = blockIdx.x * blockSize * 2 + threadIdx.x;
+    gridSize = gridSize << 1;
+
+    while (i < n) {
+      mySum += g_idata[i];
+      // ensure we don't read out of bounds -- this is optimized away for
+      // powerOf2 sized arrays
+      if ((i + blockSize) < n) {
+        mySum += g_idata[i + blockSize];
+      }
+      i += gridSize;
+    }
+  } else {
+    unsigned int i = blockIdx.x * blockSize + threadIdx.x;
+    while (i < n) {
+      mySum += g_idata[i];
+      i += gridSize;
+    }
+  }
+
+  // each thread puts its local sum into shared memory
+  sdata[tid] = mySum;
+  cg::sync(cta);
+
+  // do reduction in shared mem
+  if ((blockSize >= 512) && (tid < 256)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 256];
+  }
+
+  cg::sync(cta);
+
+  if ((blockSize >= 256) && (tid < 128)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 128];
+  }
+
+  cg::sync(cta);
+
+  if ((blockSize >= 128) && (tid < 64)) {
+    sdata[tid] = mySum = mySum + sdata[tid + 64];
+  }
+
+  cg::sync(cta);
+
+  cg::thread_block_tile<32> tile32 = cg::tiled_partition<32>(cta);
+
+  if (cta.thread_rank() < 32) {
+    // Fetch final intermediate sum from 2nd warp
+    if (blockSize >= 64) mySum += sdata[tid + 32];
+    // Reduce final warp using shuffle
+    for (int offset = tile32.size() / 2; offset > 0; offset /= 2) {
+      mySum += tile32.shfl_down(mySum, offset);
+    }
+  }
+
+  // write result for this block to global mem
+  if (cta.thread_rank() == 0) g_odata[blockIdx.x] = mySum;
+}
+
+template <typename T, unsigned int blockSize, bool nIsPow2>
+__global__ void reduce7(const T *__restrict__ g_idata, T *__restrict__ g_odata,
+                        unsigned int n) {
+  T *sdata = SharedMemory<T>();
+
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int gridSize = blockSize * gridDim.x;
+  unsigned int maskLength = (blockSize & 31);  // 31 = warpSize-1
+  maskLength = (maskLength > 0) ? (32 - maskLength) : maskLength;
+  const unsigned int mask = (0xffffffff) >> maskLength;
+
+  T mySum = 0;
+
+  // we reduce multiple elements per thread.  The number is determined by the
+  // number of active thread blocks (via gridDim).  More blocks will result
+  // in a larger gridSize and therefore fewer elements per thread
+  if (nIsPow2) {
+    unsigned int i = blockIdx.x * blockSize * 2 + threadIdx.x;
+    gridSize = gridSize << 1;
+
+    while (i < n) {
+      mySum += g_idata[i];
+      // ensure we don't read out of bounds -- this is optimized away for
+      // powerOf2 sized arrays
+      if ((i + blockSize) < n) {
+        mySum += g_idata[i + blockSize];
+      }
+      i += gridSize;
+    }
+  } else {
+    unsigned int i = blockIdx.x * blockSize + threadIdx.x;
+    while (i < n) {
+      mySum += g_idata[i];
+      i += gridSize;
+    }
+  }
+
+  // Reduce within warp using shuffle or reduce_add if T==int & CUDA_ARCH ==
+  // SM 8.0
+  mySum = warpReduceSum<T>(mask, mySum);
+
+  // each thread puts its local sum into shared memory
+  if ((tid % warpSize) == 0) {
+    sdata[tid / warpSize] = mySum;
+  }
+
+  __syncthreads();
+
+  const unsigned int shmem_extent =
+      (blockSize / warpSize) > 0 ? (blockSize / warpSize) : 1;
+  const unsigned int ballot_result = __ballot_sync(mask, tid < shmem_extent);
+  if (tid < shmem_extent) {
+    mySum = sdata[tid];
+    // Reduce final warp using shuffle or reduce_add if T==int & CUDA_ARCH ==
+    // SM 8.0
+    mySum = warpReduceSum<T>(ballot_result, mySum);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) {
+    g_odata[blockIdx.x] = mySum;
+  }
+}
+
+// Performs a reduction step and updates numTotal with how many are remaining
+template <typename T, typename Group>
+__device__ T cg_reduce_n(T in, Group &threads) {
+  return cg::reduce(threads, in, cg::plus<T>());
+}
+
+template <class T>
+__global__ void cg_reduce(T *g_idata, T *g_odata, unsigned int n) {
+  // Shared memory for intermediate steps
+  T *sdata = SharedMemory<T>();
+  // Handle to thread block group
+  cg::thread_block cta = cg::this_thread_block();
+  // Handle to tile in thread block
+  cg::thread_block_tile<32> tile = cg::tiled_partition<32>(cta);
+
+  unsigned int ctaSize = cta.size();
+  unsigned int numCtas = gridDim.x;
+  unsigned int threadRank = cta.thread_rank();
+  unsigned int threadIndex = (blockIdx.x * ctaSize) + threadRank;
+
+  T threadVal = 0;
+  {
+    unsigned int i = threadIndex;
+    unsigned int indexStride = (numCtas * ctaSize);
+    while (i < n) {
+      threadVal += g_idata[i];
+      i += indexStride;
+    }
+    sdata[threadRank] = threadVal;
+  }
+
+  // Wait for all tiles to finish and reduce within CTA
+  {
+    unsigned int ctaSteps = tile.meta_group_size();
+    unsigned int ctaIndex = ctaSize >> 1;
+    while (ctaIndex >= 32) {
+      cta.sync();
+      if (threadRank < ctaIndex) {
+        threadVal += sdata[threadRank + ctaIndex];
+        sdata[threadRank] = threadVal;
+      }
+      ctaSteps >>= 1;
+      ctaIndex >>= 1;
+    }
+  }
+
+  // Shuffle redux instead of smem redux
+  {
+    cta.sync();
+    if (tile.meta_group_rank() == 0) {
+      threadVal = cg_reduce_n(threadVal, tile);
+    }
+  }
+
+  if (threadRank == 0) g_odata[blockIdx.x] = threadVal;
+}
+
+template <class T, size_t BlockSize, size_t MultiWarpGroupSize>
+__global__ void multi_warp_cg_reduce(T *g_idata, T *g_odata, unsigned int n) {
+  // Shared memory for intermediate steps
+  T *sdata = SharedMemory<T>();
+  __shared__ cg::block_tile_memory<BlockSize> scratch;
+
+  // Handle to thread block group
+  auto cta = cg::this_thread_block(scratch);
+  // Handle to multiWarpTile in thread block
+  auto multiWarpTile = cg::tiled_partition<MultiWarpGroupSize>(cta);
+
+  unsigned int gridSize = BlockSize * gridDim.x;
+  T threadVal = 0;
+
+  // we reduce multiple elements per thread.  The number is determined by the
+  // number of active thread blocks (via gridDim).  More blocks will result
+  // in a larger gridSize and therefore fewer elements per thread
+  int nIsPow2 = !(n & n-1);
+  if (nIsPow2) {
+    unsigned int i = blockIdx.x * BlockSize * 2 + threadIdx.x;
+    gridSize = gridSize << 1;
+
+    while (i < n) {
+      threadVal += g_idata[i];
+      // ensure we don't read out of bounds -- this is optimized away for
+      // powerOf2 sized arrays
+      if ((i + BlockSize) < n) {
+        threadVal += g_idata[i + blockDim.x];
+      }
+      i += gridSize;
+    }
+  } else {
+    unsigned int i = blockIdx.x * BlockSize + threadIdx.x;
+    while (i < n) {
+      threadVal += g_idata[i];
+      i += gridSize;
+    }
+  }
+
+  threadVal = cg_reduce_n(threadVal, multiWarpTile);
+
+  if (multiWarpTile.thread_rank() == 0) {
+    sdata[multiWarpTile.meta_group_rank()] = threadVal;
+  }
+  cg::sync(cta);
+
+  if (threadIdx.x == 0) {
+    threadVal = 0;
+    for (int i=0; i < multiWarpTile.meta_group_size(); i++) {
+      threadVal += sdata[i];
+    }
+    g_odata[blockIdx.x] = threadVal;
+  }
+}
+
 extern "C" bool isPow2(unsigned int x);
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -121,334 +555,334 @@ void reduce(int size, int threads, int blocks, int whichKernel, T *d_idata,
     reduce0<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
     break;
 
-  // case 1:
-  //   reduce1<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //   break;
+  case 1:
+    reduce1<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+    break;
 
-  // case 2:
-  //   reduce2<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //   break;
+  case 2:
+    reduce2<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+    break;
 
-  // case 3:
-  //   reduce3<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //   break;
+  case 3:
+    reduce3<T><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+    break;
 
-  // case 4:
-  //   switch (threads) {
-  //   case 512:
-  //     reduce4<T, 512><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+  case 4:
+    switch (threads) {
+    case 512:
+      reduce4<T, 512><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 256:
-  //     reduce4<T, 256><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 256:
+      reduce4<T, 256><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 128:
-  //     reduce4<T, 128><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 128:
+      reduce4<T, 128><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 64:
-  //     reduce4<T, 64><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 64:
+      reduce4<T, 64><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 32:
-  //     reduce4<T, 32><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 32:
+      reduce4<T, 32><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 16:
-  //     reduce4<T, 16><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 16:
+      reduce4<T, 16><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 8:
-  //     reduce4<T, 8><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 8:
+      reduce4<T, 8><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 4:
-  //     reduce4<T, 4><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 4:
+      reduce4<T, 4><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 2:
-  //     reduce4<T, 2><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 2:
+      reduce4<T, 2><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 1:
-  //     reduce4<T, 1><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
-  //   }
+    case 1:
+      reduce4<T, 1><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
+    }
 
-  //   break;
+    break;
 
-  // case 5:
-  //   switch (threads) {
-  //   case 512:
-  //     reduce5<T, 512><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+  case 5:
+    switch (threads) {
+    case 512:
+      reduce5<T, 512><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 256:
-  //     reduce5<T, 256><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 256:
+      reduce5<T, 256><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 128:
-  //     reduce5<T, 128><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 128:
+      reduce5<T, 128><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 64:
-  //     reduce5<T, 64><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 64:
+      reduce5<T, 64><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 32:
-  //     reduce5<T, 32><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 32:
+      reduce5<T, 32><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 16:
-  //     reduce5<T, 16><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 16:
+      reduce5<T, 16><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 8:
-  //     reduce5<T, 8><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 8:
+      reduce5<T, 8><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 4:
-  //     reduce5<T, 4><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 4:
+      reduce5<T, 4><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 2:
-  //     reduce5<T, 2><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
+    case 2:
+      reduce5<T, 2><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
 
-  //   case 1:
-  //     reduce5<T, 1><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //     break;
-  //   }
+    case 1:
+      reduce5<T, 1><<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+      break;
+    }
 
-  //   break;
+    break;
 
-  // case 6:
-  //   if (isPow2(size)) {
-  //     switch (threads) {
-  //     case 512:
-  //       reduce6<T, 512, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+  case 6:
+    if (isPow2(size)) {
+      switch (threads) {
+      case 512:
+        reduce6<T, 512, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 256:
-  //       reduce6<T, 256, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 256:
+        reduce6<T, 256, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 128:
-  //       reduce6<T, 128, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 128:
+        reduce6<T, 128, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 64:
-  //       reduce6<T, 64, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 64:
+        reduce6<T, 64, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 32:
-  //       reduce6<T, 32, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 32:
+        reduce6<T, 32, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 16:
-  //       reduce6<T, 16, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 16:
+        reduce6<T, 16, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 8:
-  //       reduce6<T, 8, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 8:
+        reduce6<T, 8, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 4:
-  //       reduce6<T, 4, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 4:
+        reduce6<T, 4, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 2:
-  //       reduce6<T, 2, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 2:
+        reduce6<T, 2, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 1:
-  //       reduce6<T, 1, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
-  //     }
-  //   } else {
-  //     switch (threads) {
-  //     case 512:
-  //       reduce6<T, 512, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 1:
+        reduce6<T, 1, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
+      }
+    } else {
+      switch (threads) {
+      case 512:
+        reduce6<T, 512, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 256:
-  //       reduce6<T, 256, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 256:
+        reduce6<T, 256, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 128:
-  //       reduce6<T, 128, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 128:
+        reduce6<T, 128, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 64:
-  //       reduce6<T, 64, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 64:
+        reduce6<T, 64, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 32:
-  //       reduce6<T, 32, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 32:
+        reduce6<T, 32, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 16:
-  //       reduce6<T, 16, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 16:
+        reduce6<T, 16, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 8:
-  //       reduce6<T, 8, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 8:
+        reduce6<T, 8, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 4:
-  //       reduce6<T, 4, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 4:
+        reduce6<T, 4, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 2:
-  //       reduce6<T, 2, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 2:
+        reduce6<T, 2, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 1:
-  //       reduce6<T, 1, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
-  //     }
-  //   }
+      case 1:
+        reduce6<T, 1, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
+      }
+    }
 
-  //   break;
+    break;
 
-  // case 7:
-  //   // For reduce7 kernel we require only blockSize/warpSize
-  //   // number of elements in shared memory
-  //   smemSize = ((threads / 32) + 1) * sizeof(T);
-  //   if (isPow2(size)) {
-  //     switch (threads) {
-  //     case 1024:
-  //       reduce7<T, 1024, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
-  //     case 512:
-  //       reduce7<T, 512, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+  case 7:
+    // For reduce7 kernel we require only blockSize/warpSize
+    // number of elements in shared memory
+    smemSize = ((threads / 32) + 1) * sizeof(T);
+    if (isPow2(size)) {
+      switch (threads) {
+      case 1024:
+        reduce7<T, 1024, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
+      case 512:
+        reduce7<T, 512, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 256:
-  //       reduce7<T, 256, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 256:
+        reduce7<T, 256, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 128:
-  //       reduce7<T, 128, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 128:
+        reduce7<T, 128, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 64:
-  //       reduce7<T, 64, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 64:
+        reduce7<T, 64, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 32:
-  //       reduce7<T, 32, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 32:
+        reduce7<T, 32, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 16:
-  //       reduce7<T, 16, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 16:
+        reduce7<T, 16, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 8:
-  //       reduce7<T, 8, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 8:
+        reduce7<T, 8, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 4:
-  //       reduce7<T, 4, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 4:
+        reduce7<T, 4, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 2:
-  //       reduce7<T, 2, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 2:
+        reduce7<T, 2, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 1:
-  //       reduce7<T, 1, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
-  //     }
-  //   } else {
-  //     switch (threads) {
-  //     case 1024:
-  //       reduce7<T, 1024, true>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
-  //     case 512:
-  //       reduce7<T, 512, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 1:
+        reduce7<T, 1, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
+      }
+    } else {
+      switch (threads) {
+      case 1024:
+        reduce7<T, 1024, true>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
+      case 512:
+        reduce7<T, 512, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 256:
-  //       reduce7<T, 256, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 256:
+        reduce7<T, 256, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 128:
-  //       reduce7<T, 128, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 128:
+        reduce7<T, 128, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 64:
-  //       reduce7<T, 64, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 64:
+        reduce7<T, 64, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 32:
-  //       reduce7<T, 32, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 32:
+        reduce7<T, 32, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 16:
-  //       reduce7<T, 16, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 16:
+        reduce7<T, 16, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 8:
-  //       reduce7<T, 8, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 8:
+        reduce7<T, 8, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 4:
-  //       reduce7<T, 4, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 4:
+        reduce7<T, 4, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 2:
-  //       reduce7<T, 2, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
+      case 2:
+        reduce7<T, 2, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
 
-  //     case 1:
-  //       reduce7<T, 1, false>
-  //           <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
-  //       break;
-  //     }
-  //   }
+      case 1:
+        reduce7<T, 1, false>
+            <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
+        break;
+      }
+    }
 
   //   break;
   // case 8:
@@ -483,9 +917,9 @@ void reduce(int size, int threads, int blocks, int whichKernel, T *d_idata,
   //         <<<dimGrid, dimBlock, smemSize>>>(d_idata, d_odata, size);
   //     break;
 
-    default:
-      printf("thread block size of < 64 is not supported for this kernel\n");
-      break;
+    // default:
+    //   printf("thread block size of < 64 is not supported for this kernel\n");
+    //   break;
     // }
     // break;
   }
@@ -500,8 +934,9 @@ void generate_random_array(T *array, const int &size, const int &seed) {
     std::cout << "Seed: " << seed << std::endl;
   std::mt19937 engine(seed);
   std::normal_distribution<T> generator(0, 1);
-  for (int i = 0; i < size; i++)
+  for (int i = 0; i < size; i++){
     array[i] = generator(engine);
+  }
 }
 
 unsigned int nextPow2(unsigned int x) {
@@ -516,7 +951,7 @@ unsigned int nextPow2(unsigned int x) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // declaration, forward
-template <class T> T runTest(int argc, char **argv, ReduceType datatype, float* data);
+template <class T> T runTest(int argc, char **argv, ReduceType datatype, T* data);
 
 #define MAX_BLOCK_DIM_SIZE 65535
 
@@ -628,41 +1063,37 @@ std::vector<int> countDecimalDigits(const std::vector<std::string>& numbers) {
 
 int main(int argc, char **argv) {
   int size = 1 << 15;
-  unsigned int bytes = sizeof(float) * size;
   std::vector<std::string> double_string_vec = {};
   std::vector<std::string> float_string_vec = {};
   std::vector<std::string> err_string_vec = {};
   std::vector<double> err_vec = {};
   int precision = 30;
     std::string fileName = "output.txt";
+      unsigned int bytes = sizeof(float) * size;
   for (int seed = 1; seed < 11; seed++) {
         // Double array handling
+      float *data = (float*)malloc(bytes);
       ReduceType datatype = REDUCE_DOUBLE;
       printf("\nReducing array of type %s\n", getReduceTypeString(datatype));
-      float *data1 = (float*)malloc(bytes);
-      generate_random_array(data1, size, seed);
+      generate_random_array<float>(data, size, seed);
+      double *data1 = (double*)malloc(sizeof(double) * size);
+      for (int i = 0; i < size; i++) {
+          data1[i] = (double)data[i];
+      }
+
+
       double gpu_result_double = (double)0.0;
         gpu_result_double = runTest<double>(argc, argv, datatype,data1);
         std::cout << "GPU_result_double: " << std::fixed <<  std::setprecision(precision) <<gpu_result_double << "\n"<< std::endl;
         std::string formatted_double = formatNumericToString(gpu_result_double, precision);
         double_string_vec.push_back(formatted_double);
-      // for (int i = 0; i < 4; i++) {
-      //     std::cout << "First: \n" << data2[i] << std::endl;
-      // }
-      // for (int i = 0; i < 4; i++) {
-      //     std::cout << "second: \n" << (double)data2[i] << std::endl;
-      // }
 
-
-
-        // Float array handling
+        // Float array handliag
       datatype = REDUCE_FLOAT;
       printf("Reducing array of type %s\n", getReduceTypeString(datatype));
-      float *data2 = (float *)malloc(bytes);
-      generate_random_array(data2, size, seed);
-      float gpu_result_float = (float)0.0f;  // Initialize outside the switch
-        gpu_result_float = runTest<float>(argc, argv, datatype,data2);
-        std::cout << "CPU_result_float: "<< std::fixed <<  std::setprecision(precision) << gpu_result_float << "\n" <<std::endl;
+      float gpu_result_float = (float)0.0f;
+        gpu_result_float = runTest<float>(argc, argv, datatype,data);
+        std::cout << "GPU_result_float: "<< std::fixed <<  std::setprecision(precision) << gpu_result_float << "\n" <<std::endl;
         std::string formatted_float = formatNumericToString(gpu_result_float, precision);
         float_string_vec.push_back(formatted_float);
 
@@ -672,8 +1103,6 @@ int main(int argc, char **argv) {
         std::string formatted_err = formatNumericToString(err, precision);
         err_string_vec.push_back(formatted_err);
         err_vec.push_back(err);
-
-
   }
 
 
@@ -762,7 +1191,6 @@ T benchmarkReduce(int n, int numThreads, int numBlocks, int maxThreads,
       for (int i = 0; i < numBlocks; i++) {
         gpu_result += h_odata[i];
       }
-
       needReadBack = false;
     } else {
       // sum partial block sums on GPU
@@ -807,22 +1235,20 @@ T benchmarkReduce(int n, int numThreads, int numBlocks, int maxThreads,
   return gpu_result;
 }
 
-template <class T> T runTest(int argc, char **argv, ReduceType datatype, float* random_data) {
+template <class T> T runTest(int argc, char **argv, ReduceType datatype, T* random_data) {
   int size = 1 << 15;   // number of elements to reduce
   std::cout << "Size: " << size << std::endl;
-  int maxThreads = 128; // number of threads per block
+  int maxThreads = 32; // number of threads per block
   int whichKernel = 0;
+  std::cout << "Kernel: " << whichKernel << std::endl;
   int maxBlocks = 1024;
-  bool cpuFinalReduction = false;
+  bool cpuFinalReduction = true;
   std::cout << (cpuFinalReduction ? "1-step" : "N-steps") << std::endl;
   int cpuFinalThreshold = 1;
 
   unsigned int bytes = size * sizeof(T);
 
-  T *h_idata = (T *)malloc(bytes);
-  for (int i = 0; i < size; i++) {
-      h_idata[i] = (T) random_data[i];
-  }
+  T *h_idata = random_data;
 
   int numBlocks = 0;
   int numThreads = 0;
@@ -844,7 +1270,8 @@ template <class T> T runTest(int argc, char **argv, ReduceType datatype, float* 
   cudaMalloc((void **)&d_odata, numBlocks * sizeof(T));
 
   // copy data directly to device memory
-  cudaMemcpy(d_idata, h_idata, bytes, cudaMemcpyHostToDevice);
+ cudaMemcpy(d_idata, h_idata, bytes, cudaMemcpyHostToDevice);
+ 
   cudaMemcpy(d_odata, h_idata, numBlocks * sizeof(T), cudaMemcpyHostToDevice);
 
   // // warm-up
