@@ -4,9 +4,7 @@
 using namespace std;
 
 int main() {
-	string fruit[]{"apple", "orange", "banana"};
-    frut
-	cout << fruit[2] << endl;
-	return 0;
+  string fruit[]{"apple", "orange", "banana"};
+  cout << fruit[2] << endl;
+  return 0;
 }
-
