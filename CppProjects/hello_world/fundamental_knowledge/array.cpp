@@ -1,19 +1,17 @@
 // 1. write an array, raw array in c-style and std::array
 // 2. show type of array and element inside that containers
 // 3. fill the array from 1 to 1000
-#include <iostream>
 #include <array>
+#include <iostream>
 #include <iterator>
 #include <numeric>
 #include <typeinfo>
 
-int main() {
+int main()
+{
+    {
     // C++-style
     std::array<int, 5> arr{0, 5, 8, 9, 4};
-    /*std::iota(std::begin(arr), std::end(arr), 10);*/
-    /*for (auto& i: arr) {*/
-    /*    std::cout << i << std::endl;*/
-    /*}*/
 
     int first_element = arr[0];
     first_element++;
@@ -50,6 +48,19 @@ int main() {
     test++;
     std::cout << "test: " << *ptr_test << std::endl;
     std::cout << "test ptr: " << ptr_test << std::endl;
-    return 0;
+    }
+    {
+    	int arr[]{1, 2, 3};
+	std::iota(std::begin(arr), std::end(arr), 10);
+	for (auto& i: arr) {
+	    std::cout << i << std::endl;
+	}
+	std::fill(std::begin(arr), std::end(arr), 100);
+	for (auto& i: arr) {
+	    std::cout << i << std::endl;
+	}
 
+    }
+
+    return 0;
 }

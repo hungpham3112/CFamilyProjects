@@ -19,6 +19,7 @@ int main(int argc, char *argv[]) {
     c[i] = i * i;
     printf("%lf\n", c[i]);
   }
+
   printf("Size of %lu\n", sizeof(int));
   printf("Size of %lu\n", sizeof(float));
   printf("Size of %lu\n", sizeof(double));
