@@ -9,7 +9,7 @@ int main()
     y = 4; // copy assignment
 
     int width{5};
-    std::cout << width << std::endl;
+    std::cout << x << std::endl;
 
     // There are 5 types of initialization:
     // default
