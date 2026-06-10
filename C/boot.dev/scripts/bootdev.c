@@ -12,7 +12,6 @@
 //
 // Project contract:
 //   <root>/<project>/
-//   ├── README.md
 //   ├── main.c      // test harness
 //   ├── *.h
 //   └── *.c         // optional implementation files
@@ -996,12 +995,8 @@ static void cmd_new(const char *root, const char *arg)
     ensure_parent_dirs(project);
     ensure_dir(project);
 
-    char readme[PATH_MAX], main_c[PATH_MAX];
-    path_join(readme, project, "README.md");
+    char main_c[PATH_MAX];
     path_join(main_c, project, "main.c");
-
-    write_file_if_missing(readme, "# New exercise\n\n"
-                                  "Edit the files in this directory until `bootdev` passes.\n");
 
     write_file_if_missing(main_c, "#include \"munit.h\"\n\n"
                                   "munit_case(RUN, test_placeholder, {\n"
