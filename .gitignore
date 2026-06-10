@@ -66,3 +66,7 @@ Desktop.ini
 
 .cache/
 .vscode/
+
+# Boot.dev
+.bootdev/
+.bootdevroot

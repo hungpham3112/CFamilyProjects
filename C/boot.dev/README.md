@@ -1,48 +1,133 @@
-# lab v2
+# bootdev runner
 
-Root is your chosen repo directory, for example:
-
-```text
-~/CFamilyProjects/C/boot.dev
-```
-
-Exercises live directly under that root:
-
-```text
-boot.dev/
-├── .clabroot
-├── include/munit.h
-├── vendor/munit/munit.c
-├── build/
-├── src/lab.c
-├── c_basics/
-│   ├── README.md
-│   ├── color.h
-│   └── main.c
-└── hello/
-    ├── README.md
-    └── main.c
-```
-
-No required `courses/` directory.
+Local C exercise runner for Boot.dev-style lessons.
 
 ## Install
 
-```bash
-cd ~/CFamilyProjects/C/boot.dev
-mkdir -p src
-cp /path/to/lab.c src/lab.c
-bash /path/to/install_lab.sh
-```
-
-## Usage
+From the repository root:
 
 ```bash
-lab new hello    # creates ./hello
-lab hello        # runs ./hello
-lab c_basics     # runs ./c_basics
-lab use hello    # sets current project
-lab              # runs current project
-lab ls           # lists projects
-lab where        # shows current project
+./scripts/install-bootdev
 ```
+
+This installs:
+
+```text
+/usr/local/bin/bootdev
+```
+
+Check:
+
+```bash
+which bootdev
+bootdev --help
+```
+
+Expected:
+
+```text
+/usr/local/bin/bootdev
+```
+
+## Basic usage
+
+Create a new exercise:
+
+```bash
+bootdev new hello
+```
+
+Run an exercise:
+
+```bash
+bootdev run hello
+```
+
+Shortcut:
+
+```bash
+bootdev hello
+```
+
+Run the current exercise:
+
+```bash
+bootdev run
+```
+
+or:
+
+```bash
+bootdev
+```
+
+Select the current exercise:
+
+```bash
+bootdev select hello
+```
+
+Show the current exercise:
+
+```bash
+bootdev current
+```
+
+List exercises:
+
+```bash
+bootdev list
+```
+
+Move forward/backward:
+
+```bash
+bootdev next
+bootdev prev
+```
+
+Open the current exercise in editor:
+
+```bash
+bootdev edit
+```
+
+## Environment config
+
+Show config:
+
+```bash
+bootdev env
+```
+
+Set compiler:
+
+```bash
+bootdev env CC /usr/bin/clang
+```
+
+Set editor:
+
+```bash
+bootdev env EDITOR /usr/bin/vim
+```
+
+Unset:
+
+```bash
+bootdev env unset CC
+bootdev env unset EDITOR
+```
+
+Shell environment overrides persistent config:
+
+```bash
+CC=/usr/bin/gcc bootdev run hello
+```
+
+## Uninstall
+
+```bash
+sudo rm -f /usr/local/bin/bootdev
+```
+
