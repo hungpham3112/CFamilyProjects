@@ -265,9 +265,8 @@ static bool is_project(const char *path)
 
 static bool ignored_dir_name(const char *name)
 {
-    return strcmp(name, ".git") == 0 || strcmp(name, ".bootdev") == 0 || strcmp(name, ".bootdev") == 0 ||
-           strcmp(name, "build") == 0 || strcmp(name, "third_party") == 0 || strcmp(name, "include") == 0 ||
-           strcmp(name, "src") == 0 || strcmp(name, "bin") == 0;
+    return strcmp(name, ".git") == 0 || strcmp(name, ".bootdev") == 0 || strcmp(name, "build") == 0 ||
+           strcmp(name, "third_party") == 0 || strcmp(name, "include") == 0 || strcmp(name, "bin") == 0;
 }
 
 static bool find_project_from_cwd(const char *root, char project[PATH_MAX])
@@ -521,11 +520,21 @@ static void get_state_project(const char *root, char project[PATH_MAX])
 
 static void current_project(const char *root, char project[PATH_MAX])
 {
+    char state_path[PATH_MAX];
+
+    state_file_path(state_path, root);
+
+    if (is_file(state_path))
+    {
+        get_state_project(root, project);
+        return;
+    }
+
     if (find_project_from_cwd(root, project))
         return;
-    get_state_project(root, project);
-}
 
+    die("no current project. Run: bootdev select <project> or bootdev <project>");
+}
 static void resolve_project_arg(const char *root, const char *arg, char project[PATH_MAX])
 {
     char tmp[PATH_MAX];
@@ -598,19 +607,18 @@ static void list_projects(const char *root)
 
     char cur[PATH_MAX] = {0};
     bool has_cur = false;
-    if (find_project_from_cwd(root, cur))
+
+    char state_path[PATH_MAX];
+    state_file_path(state_path, root);
+
+    if (is_file(state_path))
     {
+        get_state_project(root, cur);
         has_cur = true;
     }
-    else
+    else if (find_project_from_cwd(root, cur))
     {
-        char state_path[PATH_MAX];
-        state_file_path(state_path, root);
-        if (is_file(state_path))
-        {
-            get_state_project(root, cur);
-            has_cur = true;
-        }
+        has_cur = true;
     }
 
     for (size_t i = 0; i < projects.len; i++)
