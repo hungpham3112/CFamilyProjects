@@ -4,27 +4,26 @@
 #include <sys/wait.h>  // wait
 #include <unistd.h>    // fork, getpid
 
-int main() {
-  /*printf("Original process: PID = %d\n", getpid());*/
-  /*sleep(10);*/
+int main()
+{
 
-  printf("1");
-  pid_t result;
-  result = fork(); // create new process
-  printf("2\n");
+    printf("Current process ID: %d\n", getpid());
+    pid_t result = fork();
 
-  /*if (result < 0) {*/
-  /*  perror("fork failed");*/
-  /*  exit(1);*/
-  /*} else if (result == 0) {*/
-  /*  // This block is executed by child process*/
-  /*  printf("Child process: PID = %d, PPID = %d\n", getpid(), getppid());*/
-  /*  exit(0);*/
-  /*} else {*/
-  /*  // This block is executed by parent process*/
-  /*  printf("Parent process: PID = %d, Child PID = %d\n", getpid(), result);*/
-  /*  wait(NULL); // wait for child to finish*/
-  /*}*/
+    if (result < 0)
+    {
+        perror("can't spawn process");
+    }
+    else if (result == 0)
+    {
+        pid_t pid = wait(NULL);
+        printf("Child process ID: %d, parent process: %d\n", getpid(), getppid());
+    }
+    else
+    {
+        printf("Parent process ID: %d, child process: %d\n", getpid(), result);
+        // printf("Parent process ID: %d, child process: %d\n", getpid(), pid);
+    }
 
-  return 0;
+    return 0;
 }

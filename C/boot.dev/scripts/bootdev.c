@@ -994,7 +994,14 @@ static void cmd_new(const char *root, const char *arg)
     }
     else
     {
-        path_join(project, root, arg);
+        char cwd[PATH_MAX];
+        if (!getcwd(cwd, sizeof(cwd)))
+            die("getcwd failed: %s", strerror(errno));
+
+        if (!starts_with_path(cwd, root))
+            die("current directory is outside bootdev root: %s", cwd);
+
+        path_join(project, cwd, arg);
     }
 
     if (!starts_with_path(project, root))
@@ -1022,6 +1029,10 @@ static void cmd_new(const char *root, const char *arg)
     char resolved[PATH_MAX], rel[PATH_MAX];
     if (!realpath(project, resolved))
         die("realpath failed: %s", project);
+
+    if (!starts_with_path(resolved, root))
+        die("path escapes root after resolution: %s", arg);
+
     relpath(rel, root, resolved);
 
     set_current_project(root, resolved);

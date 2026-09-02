@@ -262,6 +262,9 @@
 #define assert_not_null(ptr, msg) \
   munit_assert_not_null((ptr), (msg))
 
+#define assert_ptr_not_null(ptr, msg) \
+  munit_assert_not_null((ptr), (msg))
+
 #define assert_string_equal(left, right, msg) \
   munit_assert_string_equal((left), (right), (msg))
 
